@@ -1,0 +1,5 @@
+fastapi>=0.111
+uvicorn[standard]>=0.30
+supabase>=2.5
+python-dotenv>=1.0
+python-multipart>=0.0.9
