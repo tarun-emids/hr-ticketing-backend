@@ -281,3 +281,13 @@ cd backend && .venv/bin/activate
 pytest            # offline: FastSupabase fake, no network (integration is excluded)
 pytest -m integration   # live round-trips against the real project
 ```
+
+
+
+## tracing using Jaegar
+## run this in a separate terminal while the frontend and backend are running
+# trace viewer
+```bash
+docker run --rm -p 127.0.0.1:16686:16686 -p 127.0.0.1:4318:4318 jaegertracing/all-in-one:latest
+open http://127.0.0.1:16686   # service: hrdesk-api
+```

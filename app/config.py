@@ -30,6 +30,27 @@ ATTACHMENT_BUCKET = "ticket-attachments"
 # 5 MB cap, mirrors the frontend TicketForm limit
 MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024
 
+# --- observability (logging + tracing; see README §11) ----------------------
+# floor level for app logs: debug | info | warning | error
+LOG_LEVEL = os.getenv("LOG_LEVEL", "info")
+# console (human) | json (one JSON object per line)
+LOG_FORMAT = os.getenv("LOG_FORMAT", "console").strip().lower()
+# false removes ALL tracing instrumentation and export (zero overhead)
+TRACE_ENABLED = os.getenv("TRACE_ENABLED", "true").strip().lower() not in (
+    "false", "0", "no", "off"
+)
+OTEL_SERVICE_NAME = os.getenv("OTEL_SERVICE_NAME", "hrdesk-api")
+OTEL_EXPORTER_OTLP_ENDPOINT = os.getenv(
+    "OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318"
+)
+# --- persistent log files ---------------------------------------------------
+# daily-rotating JSON log file (see README §11: location + retention)
+LOG_TO_FILE = os.getenv("LOG_TO_FILE", "true").strip().lower() not in (
+    "false", "0", "no", "off"
+)
+LOG_FILE_PATH = os.getenv("LOG_FILE_PATH") or str(BASE_DIR / "logs" / "app.log")
+LOG_FILE_RETENTION_DAYS = int(os.getenv("LOG_FILE_RETENTION_DAYS", "14"))
+
 _client: Optional[Client] = None
 
 

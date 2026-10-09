@@ -9,6 +9,7 @@ Wiring: every repository gets its client through app/deps.py, which resolves
 `app.config.get_client()` at call time — so patching app.config.get_client
 swaps in the fake for ALL layers at once (controllers -> services -> repos).
 """
+import os
 import uuid as uuidlib
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -16,6 +17,13 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 from postgrest.exceptions import APIError
+
+# Observability: keep the offline suite tracer-free and hermetic (no OTLP
+# exporter, no attempted export, no log files written into the repo).
+# tests/unit/test_observability.py manages its own tracer providers.
+# This must run before app.config is first imported.
+os.environ.setdefault("TRACE_ENABLED", "false")
+os.environ.setdefault("LOG_TO_FILE", "false")
 
 _orchestrated = datetime(2026, 1, 1, 9, 0, 0, tzinfo=timezone.utc)
 
@@ -305,7 +313,7 @@ class FakeSupabase:
 
     def seed_tickets(self):
         """Three demo tickets mirroring src/data/store.js shape. Created via the
-        fake itself so ref numbering/an sequence behaves like the real identity."""
+        fake itself so ref numbering/id sequence behaves like the real identity."""
         t101 = {
             "employee_id": U["priya"], "category": "Payroll",
             "subject": "May payslip missing shift allowance",

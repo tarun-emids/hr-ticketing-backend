@@ -6,12 +6,19 @@ Layering:
     app.repositories (the only layer that touches Supabase)
     app.deps         (the DI graph wiring it together)
 
+Observability (all opt-out via env — see app/observability.py and README §11):
+    - setup_logging(): console (console|json) + rotating JSON file handlers
+    - RequestLogMiddleware: request_id (validated client id or fresh UUID),
+      X-Request-ID response header on every request, one log line per
+      request (method, path, status, ms; /health + preflights unlogged)
+    - setup_tracing(app): OpenTelemetry server+httpx spans, OTLP export,
+      joining the frontend's W3C traceparent
+
 Run:
     uvicorn app.main:app --reload --port 8000
 Docs at http://localhost:8000/docs
 """
 import asyncio
-import traceback
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -19,7 +26,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app import config as app_config
-from app.controllers import attachments, auth, drafts, notifications, tickets, users
+from app.controllers import attachments, auth, drafts, logs, notifications, tickets, users
 from app.services.notification_service import (
     SLA_SWEEP_INTERVAL_SECONDS,
     NotificationService,
@@ -27,6 +34,16 @@ from app.services.notification_service import (
 from app.repositories.notification_repository import NotificationRepository
 from app.repositories.ticket_repository import TicketRepository
 from app.repositories.user_repository import UserRepository
+from app.observability import (
+    RequestLogMiddleware,
+    get_logger,
+    record_error_on_current_span,
+    setup_logging,
+    setup_tracing,
+)
+
+setup_logging()
+log = get_logger()
 
 
 def _notification_service_for_jobs() -> NotificationService:
@@ -69,6 +86,13 @@ app = FastAPI(
     description="Ticketing backend for the Emids HR Desk frontend (Supabase Postgres + Storage).",
     version="0.1.3",
     lifespan=lifespan,
+    # FastAPI's native telemetry would auto-add OTLP exporters from
+    # OTEL_EXPORTER_OTLP_ENDPOINT for traces/metrics/logs on top of our own
+    # setup — the metric one was the source of the per-minute
+    # "Failed to export metrics batch code: 404" (Jaeger does not ingest
+    # metrics). Tracing/logging here is configured explicitly in
+    # app/observability.py; FastAPI's env auto-config is ours to own.
+    telemetry={"auto_configure": False},
 )
 
 app.add_middleware(
@@ -77,7 +101,12 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    # so the browser can read the request-id echo in cross-origin dev
+    expose_headers=["X-Request-ID"],
 )
+
+# One structured line per API request (skips /health + CORS preflights).
+app.add_middleware(RequestLogMiddleware)
 
 # /api mount: frontend will call e.g. http://localhost:8000/api/tickets
 app.include_router(auth.router, prefix="/api")
@@ -86,6 +115,8 @@ app.include_router(attachments.router, prefix="/api")
 app.include_router(drafts.router, prefix="/api")
 app.include_router(notifications.router, prefix="/api")
 app.include_router(users.router, prefix="/api")
+# frontend log events → the same backend/logs/app.log backend records use
+app.include_router(logs.router, prefix="/api")
 
 
 @app.get("/health")
@@ -97,9 +128,19 @@ def health():
 @app.exception_handler(Exception)
 async def unhandled_exception(request: Request, exc: Exception):
     """Dev handler: any uncaught server error returns readable JSON instead of
-    a bare 500, and still prints the full traceback to the console."""
-    traceback.print_exc()
+    a bare 500. The full traceback goes to the structured log (and to the
+    active tracing span); the response contract is unchanged."""
+    log.exception(
+        f"unhandled server error: {request.method} {request.url.path}",
+        extra={"http": {"method": request.method, "path": request.url.path}},
+    )
+    record_error_on_current_span(exc)
     return JSONResponse(
         status_code=500,
         content={"error": type(exc).__name__, "detail": str(exc)},
     )
+
+
+# Tracing LAST, after every middleware/route is registered. No-op when
+# TRACE_ENABLED=false or the OTel packages are not installed.
+setup_tracing(app)
