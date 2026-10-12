@@ -93,6 +93,11 @@ class FakeQueryBuilder:
         self._filters.append(("ilike", col, pattern))
         return self
 
+    def in_(self, col, values):
+        # PostgREST vals arrive json-dumped; the fake only ever filters text.
+        self._filters.append(("in", col, [str(v) for v in (values or [])]))
+        return self
+
     def lt(self, col, val):
         self._filters.append(("lt", col, val))
         return self
@@ -117,6 +122,8 @@ class FakeQueryBuilder:
             elif kind == "ilike":
                 pat = val.replace("%", "").lower()
                 rows = [r for r in rows if pat in str(r.get(col) or "").lower()]
+            elif kind == "in":
+                rows = [r for r in rows if str(r.get(col)) in val]
             elif kind == "lt":
                 rows = [r for r in rows if str(r.get(col) or "") < str(val)]
         return rows
@@ -229,6 +236,15 @@ class FakeTable:
             }
             self.rows.append(row)
             return row
+        if self.name == "kb_documents":
+            row = {
+                **payload,
+                "id": str(uuidlib.uuid4()),
+                "created_at": now,
+                "updated_at": now,
+            }
+            self.rows.append(row)
+            return row
         row = {**payload, "id": str(uuidlib.uuid4())}
         self.rows.append(row)
         return row
@@ -248,8 +264,9 @@ class FakeStorage:
             raise RuntimeError("storage down")
         self.supa.storage_files[(self.bucket, path)] = bytes(data)
 
-    def create_signed_url(self, path, ttl):
+    def create_signed_url(self, path, ttl, options=None):
         self.supa.last_signed_ttl = ttl
+        self.supa.last_signed_options = options
         url = f"https://fake.supabase.co/storage/v1/object/sign/{self.bucket}/{path}?token=x"
         return {"signedURL": url}
 
@@ -273,10 +290,12 @@ class FakeSupabase:
         self.replies = FakeTable(self, "replies")
         self.notifications = FakeTable(self, "notifications")
         self.ticket_drafts = FakeTable(self, "ticket_drafts")
+        self.kb_documents = FakeTable(self, "kb_documents")
         self.storage = FakeStorageClient(self)
         self.storage_files = {}
         self.fail_uploads = False
         self.last_signed_ttl = None
+        self.last_signed_options = None
         self._tick = 0
         self.next_ticket_number = 101
 
@@ -288,8 +307,13 @@ class FakeSupabase:
                 "replies": self.replies,
                 "notifications": self.notifications,
                 "ticket_drafts": self.ticket_drafts,
+                "kb_documents": self.kb_documents,
             }
         return tables()[name]
+
+    def seed_kb(self):
+        """3 employee + 2 HR policy documents; used by the /kb tests."""
+        return seed_kb_rows(self)
 
     def clock(self):
         self._tick += 1
@@ -355,6 +379,7 @@ def api(monkeypatch):
     fake = FakeSupabase()
     fake.seed_users()
     fake.seed_tickets()
+    fake.seed_kb()
 
     def wire(module):
         if hasattr(module, "get_client"):
@@ -381,3 +406,64 @@ def ticket_payload(employee_id, **over):
     }
     base.update(over)
     return base
+
+
+def kb_row(slug, ref, title, audience, *, category="General", keywords="",
+           summary="", search_text="", updated_at=None):
+    """A kb_documents row shaped exactly like the schema (section 9)."""
+    return {
+        "id": str(uuidlib.uuid4()),
+        "slug": slug,
+        "ref": ref,
+        "title": title,
+        "category": category,
+        "audience": audience,
+        "summary": summary or f"{title} policy summary.",
+        "keywords": keywords,
+        "search_text": search_text or f"{title} {summary or ''} {keywords}".lower(),
+        "file_path": f"pdf/{ref.lower()}-{slug}.pdf",
+        "file_size": 12345,
+        "page_count": 7,
+        "version": "v1.0",
+        "effective_date": "2026-04-01",
+        "created_at": _orchestrated.isoformat(),
+        "updated_at": updated_at or _orchestrated.isoformat(),
+    }
+
+
+_SEED_KB = [
+    dict(slug="leave-and-time-off-policy", ref="KB-E-01",
+         title="Leave and Time Off Policy", category="Leave",
+         audience="employee",
+         keywords="leave, pto, vacation, sick, carryover",
+         summary="How time off accrues, carries over and gets approved."),
+    dict(slug="hybrid-work-policy", ref="KB-E-02",
+         title="Hybrid Work Policy", category="Workplace",
+         audience="employee",
+         keywords="hybrid, remote, office, equipment",
+         summary="Weeks per month on site and what the office provides."),
+    dict(slug="attendance-working-hours-policy", ref="KB-E-03",
+         title="Attendance and Working Hours Policy", category="Workplace",
+         audience="employee",
+         keywords="attendance, working hours, shifts",
+         summary="Core hours, shift expectations and attendance recording."),
+    dict(slug="payroll-processing-sop", ref="KB-HR-01",
+         title="Payroll Processing SOP", category="Payroll",
+         audience="hr",
+         keywords="payroll, run, cutoff, anomaly",
+         summary="The monthly payroll cycle runbook, cutoffs and anomaly flow."),
+    dict(slug="exit-process-sop", ref="KB-HR-02",
+         title="Exit Process SOP", category="Offboarding", audience="hr",
+         keywords="exit, offboarding, clearance, fnf",
+         summary="Notice, clearance and final-settlement steps for leavers."),
+]
+
+
+def seed_kb_rows(fake):
+    """Routine used by the fixture (and importable by other test modules):
+    3 employee + 2 HR documents in the fake store + PDF bytes for the viewer."""
+    rows = [kb_row(**spec) for spec in _SEED_KB]
+    fake.kb_documents.rows.extend(rows)
+    for row in rows:
+        fake.storage_files[("knowledge-base", row["file_path"])] = b"%PDF-1.4 fake-pdf-bytes"
+    return rows

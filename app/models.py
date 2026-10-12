@@ -173,3 +173,23 @@ def draft_out(row: dict) -> dict:
         "updatedAt": row["updated_at"],
         "attachment": attachment_out(row),
     }
+
+
+def kb_doc_out(row: dict) -> dict:
+    """Knowledge-base document metadata — searchable-card shape for the
+    frontend. The PDF URL is never embedded: short-lived signed links are
+    minted only through GET /kb/{slug}/file, behind the same visibility gate."""
+    return {
+        "slug": row["slug"],
+        "ref": row.get("ref"),
+        "title": row["title"],
+        "category": row.get("category", "General"),
+        "audience": row["audience"],  # 'employee' | 'hr' (agents/admin see both pools)
+        "summary": row.get("summary", ""),
+        "keywords": [k.strip() for k in (row.get("keywords") or "").split(",") if k.strip()],
+        "version": row.get("version", "v1.0"),
+        "effectiveDate": row.get("effective_date"),
+        "pages": row.get("page_count"),
+        "fileSize": row.get("file_size"),
+        "updatedAt": row.get("updated_at"),
+    }

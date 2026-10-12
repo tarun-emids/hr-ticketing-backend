@@ -12,11 +12,14 @@ from fastapi import Depends
 from app import config as app_config
 from app.repositories.attachment_storage import AttachmentStorageRepository
 from app.repositories.draft_repository import DraftRepository
+from app.repositories.kb_repository import KbRepository
+from app.repositories.kb_storage import KbStorageRepository
 from app.repositories.notification_repository import NotificationRepository
 from app.repositories.ticket_repository import TicketRepository
 from app.repositories.user_repository import UserRepository
 from app.services.auth_service import AuthService
 from app.services.draft_service import DraftService
+from app.services.kb_service import KbService
 from app.services.log_ingest_service import LogIngestService
 from app.services.notification_service import NotificationService
 from app.services.ticket_service import TicketService
@@ -48,6 +51,14 @@ def get_notification_repo(client=Depends(get_supabase)) -> NotificationRepositor
 
 def get_storage_repo(client=Depends(get_supabase)) -> AttachmentStorageRepository:
     return AttachmentStorageRepository(client)
+
+
+def get_kb_repo(client=Depends(get_supabase)) -> KbRepository:
+    return KbRepository(client)
+
+
+def get_kb_storage(client=Depends(get_supabase)) -> KbStorageRepository:
+    return KbStorageRepository(client)
 
 
 # -- services ---------------------------------------------------------------
@@ -90,3 +101,11 @@ def get_draft_service(
 def get_log_ingest_service() -> LogIngestService:
     """Frontend log sink (no Supabase — writes through the logging system)."""
     return LogIngestService()
+
+
+def get_kb_service(
+    kb: KbRepository = Depends(get_kb_repo),
+    users: UserRepository = Depends(get_user_repo),
+    pdfs: KbStorageRepository = Depends(get_kb_storage),
+) -> KbService:
+    return KbService(kb, users, pdfs)

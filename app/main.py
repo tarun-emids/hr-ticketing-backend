@@ -26,7 +26,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app import config as app_config
-from app.controllers import attachments, auth, drafts, logs, notifications, tickets, users
+from app.controllers import (
+    attachments,
+    auth,
+    drafts,
+    knowledge_base,
+    logs,
+    notifications,
+    tickets,
+    users,
+)
 from app.resilience import breakers_snapshot
 from app.services.notification_service import (
     SLA_SWEEP_INTERVAL_SECONDS,
@@ -118,6 +127,20 @@ app.include_router(notifications.router, prefix="/api")
 app.include_router(users.router, prefix="/api")
 # frontend log events → the same backend/logs/app.log backend records use
 app.include_router(logs.router, prefix="/api")
+# knowledge base (policy library: search, metadata, signed PDF URLs)
+app.include_router(knowledge_base.router, prefix="/api")
+
+
+@app.get("/")
+def root():
+    """Service banner: bare root used to answer a bare 404, which read like an
+    error. The API surface lives under /api — point humans at the useful doors."""
+    return {
+        "name": "HR Desk API",
+        "status": "running",
+        "health": "/health",
+        "docs": "/docs",
+    }
 
 
 @app.get("/health")

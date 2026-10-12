@@ -11,7 +11,7 @@ mock store for real HTTP calls with minimal changes.
 ```
 app/
   __init__.py
-  config.py               # settings + the ONE Supabase client singleton
+  config.py               # settings + the ONE Supabase client singleton (+ timeout budgets)
   main.py                 # FastAPI wiring: controllers, lifespan, exception handler
   models.py               # request DTOs (pydantic) + row -> camelCase serializers
   deps.py                 # DI graph:  controller --Depends--> service --> repository --> client
@@ -22,19 +22,33 @@ app/
     drafts.py             #   /api/drafts CRUD + submit + attachments
     notifications.py      #   /api/notifications list/read/read-all/sweep
     users.py              #   /api/users, /api/users/agents, /api/meta
+    knowledge_base.py     #   /api/kb list + search, /{slug} metadata, /{slug}/file signed PDF
   services/               # business rules — no HTTP, no database specifics
     ticket_service.py     #   create/list/get/replies, status/priority/category, assign, auto-assign, workload
     draft_service.py      #   draft CRUD, submit validation, attachment swap
     notification_service.py  # pure recipient/message rules + emit + SLA sweep + retention jobs
     user_service.py       #   directory lists + static meta
     auth_service.py       #   GoTrue password grant + account join
+    kb_service.py         #   role pools, weighted search, visibility gates (§12)
   repositories/           # the ONLY layer that touches Supabase
-    base.py               #   unwrap/run/rows_of/first_of + SupabaseRepository base
+    base.py               #   unwrap/run/rows_of/first_of + SupabaseRepository base (retry-injected)
     user_repository.py
     ticket_repository.py  #   tickets + replies (thread) + ref/uuid resolver
     draft_repository.py
     notification_repository.py
     attachment_storage.py #   Storage bucket ops (upload/remove/signed URL, 413/502 mapping)
+    kb_repository.py      #   kb_documents metadata reads
+    kb_storage.py         #   knowledge-base bucket: signed view/download PDF URLs
+```
+
+Outside the three layers:
+
+```
+  resilience.py           # circuit breakers for db/auth/storage (§11)
+  retries.py              # shared timeout/retry policy for every outbound call (§13)
+  observability.py        # structured logging + tracing instrumentation
+scripts/
+  seed_knowledge_base.py  # renders PDFs (app/kb_seed content) -> bucket + metadata rows
 ```
 
 Rules of the layering:
@@ -334,13 +348,120 @@ received on the half-open probe is evidence of life and closes the circuit.
 - **Background jobs** (SLA sweep, retention) route through the same `run()`,
   so an open db circuit also stops them from hammering PostgREST every 30
   minutes; failures are already swallowed by their own error handling.
-- **Network timeouts** (verified against installed supabase-py 2.32):
-  PostgREST 120 s, Storage 20 s, auth uses raw httpx default (5 s). All
-  bounded, so a stalled dependency eventually raises and the breaker can
-  count it — no extra configuration required. (The 120 s PostgREST ceiling
-  is generous for this workload; trimming it via `ClientOptions` would make
-  the first few failures trip the breaker faster — future tuning.)
+- **Network timeouts** (see §13): the Supabase client is built with explicit
+  budgets (`SUPABASE_TIMEOUT` 60 s overall, `SUPABASE_CONNECT_TIMEOUT` 10 s
+  connect-phase) via `ClientOptions` in `app/config.py`, so a stalled
+  or dead upstream raises within seconds instead of riding the library's
+  120 s default — the breaker still counts those failures as before.
 - Test coverage: `tests/unit/test_circuit_breaker.py` (state machine +
   `run()` classification), `tests/unit/test_auth_breaker.py`,
   `tests/api/test_breakers.py` (fail-fast through real endpoints,
   `/health/deps`, surface independence).
+
+## 12. Knowledge base (policy library)
+
+Employees search HR policy documents and open (view) or download the PDF.
+Files live in the **private `knowledge-base` storage bucket** at
+`pdf/<kb-ref>-<slug>.pdf`; only short-lived signed URLs are ever handed to a
+browser, always minted behind the same visibility gate. Document metadata
+(tags, search blob, page count, version, effective date) lives in the
+`kb_documents` table — schema.sql **section 9/10**, idempotent like the rest.
+
+### Visibility — resolved from the account row, never from the request
+
+The acting user only sends `viewerId` (the account id from real login; the
+role that matters is re-resolved server-side from `public.users`). The
+server derives the document pools the role may read:
+
+| Role | Pools readable |
+| --- | --- |
+| `employee` | `employee` (public-facing policies) |
+| `agent` (HR) | `employee` **and** `hr` — HR answers employee questions, so agents see the public policies too; this is also the admin tier of the system |
+| unknown role | nothing |
+
+An out-of-pool document answers **403** (it exists but is not for you);
+an unknown slug answers **404**; metadata and the file URL pass the same
+gate, so a signed link can never be minted for a document the viewer may
+not read.
+
+### Endpoints
+
+| Call | Behaviour |
+| --- | --- |
+| `GET /api/kb?viewerId=&q=` | catalogue page (50) or — with `q` — top-N scored matches (default 3) |
+| `GET /api/kb/popular?viewerId=` | 8 most recently refreshed docs in the viewer's pools (dashboard strip) |
+| `GET /api/kb/{slug}?viewerId=` | document metadata; 403 out of pool, 404 unknown |
+| `GET /api/kb/{slug}/file?viewerId=[&ttl=][&download=true]` | signed PDF URL (default 1 h). Default returns an **inline view** link; `download=true` returns an **attachment-disposition** link whose save dialog proposes the policy title as the filename |
+
+Search runs in Python over the (few hundred) visible metadata rows:
+tokens are scored title 10 > category 6 > keywords 4 > summary 2 > body 1,
+**a token must hit a qualifier field (title/category/keywords/summary) to
+select a document** — body-only matches are noise that would surface every
+policy that once mentions "leave". Results carry no signed URLs; the
+frontend mints those separately via `/file` so links stay short-lived and
+per-audience.
+
+### Seeding the 30 policy documents
+
+```bash
+pip install -r scripts/requirements-seed.txt   # reportlab (seed tooling only)
+python scripts/seed_knowledge_base.py          # render + upload + upsert metadata
+python scripts/seed_knowledge_base.py --dry-run            # no Supabase calls
+python scripts/seed_knowledge_base.py --rows-only          # PDFs uploaded manually
+python scripts/seed_knowledge_base.py --force              # re-render all PDFs
+```
+
+Content (18 employee policies + 12 HR-only SOPs) lives in `app/kb_seed/`;
+each document's text blocks are rendered to a branded PDF by
+`app/kb_seed/render.py`, uploaded with upsert semantics, and the metadata
+row (including the lowercased `search_text` blob that powers scoring) is
+upserted by slug. Re-runs are cheap: PDFs are re-rendered only when bytes
+change, and every row update is idempotent, so a network hiccup mid-run
+resumes cleanly by running the same command again. Pre-rendered PDFs also
+sit in `scripts/knowledge_base_pdfs/`, so `--rows-only` works without
+reportlab when the files were uploaded to the bucket manually.
+
+## 13. Timeouts and retries (the general norm)
+
+`app/retries.py` is the single place that defines how every outbound call
+to Supabase behaves under failure — table queries (repositories), storage
+(signing/uploading/removing) and the GoTrue password grant all pass through
+it, so the policy is uniform and env-tunable in one spot. It composes with
+the circuit breakers of §11: `retry_call` runs OUTSIDE the breaker here
+(each attempt is admitted by the breaker), so an OPEN circuit fails fast
+instead of being retried — retries cover isolated blips, breakers cover
+outages.
+
+**Timeouts.** The Supabase client is built with explicit budgets
+(`app/config.py`): an overall window per call (`SUPABASE_TIMEOUT`, default
+60 s — generous enough for remote-region round trips on home networks) and
+a much tighter connect budget (`SUPABASE_CONNECT_TIMEOUT`, default 10 s —
+a dead host is known within seconds instead of hanging a worker).
+The library default is a flat 120 s, which is far too permissive; a stalled
+upstream now fails fast into the retry layer instead of pinning a request.
+
+**Retries.** Only what is provably idempotent ever replays:
+
+| Operation class | Policed how | Retries on |
+| --- | --- | --- |
+| Reads (every `select` chain) | `classify_mode` → `read` | transient SQLSTATE classes 53/54/57/58 (connection, recovery, shutdown), `429` rate limits, `40001` serialization, `40P01` deadlock, read timeouts, connect failures |
+| Updates/deletes (`SyncFilterRequestBuilder`) | `write` (idempotent — replaying the same patch or predicate reaches the same state) | same set |
+| Inserts/upserts/rpc (`SyncQueryRequestBuilder`) | `guarded` — NOT idempotent: a replayed ticket insert could duplicate a row | **connect-phase failures only**, where the request provably never left the client — an exhausted 502 that may have committed stays a 502 |
+
+The wait between attempts is full-jitter exponential backoff
+(`uniform(0, min(cap, initial · 2^(n-1)))`, AWS Builders' Library style):
+default envelope `RETRY_BACKOFF_INITIAL_S=0.5`, `RETRY_BACKOFF_MAX_S=2.0`,
+`RETRY_MAX_ATTEMPTS=3` — so a retry storm cannot hammer a struggling
+Supabase, and the worst added latency per request is ≈ 2.5 s before the
+original error surfaces unchanged. Constraint violations (`23xxx`) and SQL
+misuse (`42xxx`) never retry. Every retry logs a warning with the attempt,
+error class and delay (`hrdesk.retries` logger); the caller's error mapping
+(400/502) and breaker bookkeeping are untouched because `retry_call`
+re-raises the original exception.
+
+Where the hooks live: `repositories/base.run()` (all table traffic —
+retries around the db breaker), `attachment_storage.py` + `kb_storage.py`
+(signed URLs retry as reads, uploads/removes as guarded writes around the
+storage breaker), `auth_service._grant` (guarded — bad credentials never
+replay, connect failures do). Request-level server timeouts stay where they
+belong operationally: `uvicorn`/reverse-proxy settings, not application code.
