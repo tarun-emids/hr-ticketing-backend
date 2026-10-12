@@ -25,6 +25,11 @@ CORS_ORIGINS = [
 ]
 SIGNED_URL_TTL = int(os.getenv("ATTACHMENT_SIGNED_URL_TTL", "3600"))
 
+# Circuit breakers (app/resilience.py): after this many consecutive classified
+# failures on one Supabase surface, calls to it fail fast for the cooldown.
+BREAKER_FAILURE_THRESHOLD = int(os.getenv("CIRCUIT_BREAKER_FAILURE_THRESHOLD", "5"))
+BREAKER_RECOVERY_SECONDS = float(os.getenv("CIRCUIT_BREAKER_RECOVERY_SECONDS", "30"))
+
 # Must match the bucket created by schema.sql
 ATTACHMENT_BUCKET = "ticket-attachments"
 # 5 MB cap, mirrors the frontend TicketForm limit

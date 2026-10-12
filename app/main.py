@@ -20,6 +20,7 @@ from fastapi.responses import JSONResponse
 
 from app import config as app_config
 from app.controllers import attachments, auth, drafts, notifications, tickets, users
+from app.resilience import breakers_snapshot
 from app.services.notification_service import (
     SLA_SWEEP_INTERVAL_SECONDS,
     NotificationService,
@@ -92,6 +93,17 @@ app.include_router(users.router, prefix="/api")
 def health():
     """Liveness only — does not touch Supabase."""
     return {"ok": True}
+
+
+@app.get("/health/deps")
+def health_deps():
+    """Read-only readiness view: circuit-breaker state per Supabase surface.
+
+    Makes breaker transitions observable with curl during an outage demo or
+    incident (state flips closed -> open; failures counts; secondsUntilProbe
+    while open). Touches no Supabase call, so it answers even mid-outage.
+    """
+    return {"breakers": breakers_snapshot()}
 
 
 @app.exception_handler(Exception)

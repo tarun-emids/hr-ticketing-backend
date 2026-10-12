@@ -17,7 +17,24 @@ from typing import Any, Optional
 from fastapi import HTTPException
 from postgrest.exceptions import APIError
 
+from app.resilience import db_breaker, CircuitOpenError
+
 UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+
+
+def _db_failure(e: BaseException) -> bool:
+    """Breaker classification: is this PostgREST outcome an OUTAGE signal?
+
+    Postgres constraint violations (code 23xxx) are the CALLER's fault —
+    the API already answers them 400 — so they are neutral for the breaker;
+    a stream of those must never slowly trip the circuit.
+    Any other APIError plus every non-APIError exception (timeouts,
+    connection errors) is already mapped to 502 today, i.e. the shared
+    dependency failing: those count.
+    """
+    if isinstance(e, APIError):
+        return not str(getattr(e, "code", "") or "").startswith("23")
+    return True
 
 
 def unwrap(res: Any):
@@ -35,9 +52,20 @@ def unwrap(res: Any):
 
 
 def run(q):
-    """Execute a build, mapping PostgREST errors to HTTP 4xx/5xx-with-detail."""
+    """Execute a build behind the db circuit breaker, mapping PostgREST errors
+    to HTTP 4xx/5xx-with-detail.
+
+    rows_of()/first_of() inherit the breaker through this one function — the
+    only place any .table(...).execute() network call happens (delete_row in
+    notification_repository used to execute bare and now routes here too).
+    """
     try:
-        return unwrap(q.execute())
+        return unwrap(db_breaker.call(q.execute, is_failure=_db_failure))
+    except CircuitOpenError:
+        raise HTTPException(
+            status_code=503,
+            detail="Database is temporarily unavailable — try again shortly.",
+        )
     except APIError as e:
         detail = getattr(e, "message", None) or str(e)
         code = str(getattr(e, "code", "") or "")

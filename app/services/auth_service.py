@@ -21,6 +21,7 @@ from fastapi import HTTPException
 
 from app.config import SERVICE_KEY, SUPABASE_URL
 from app.models import user_out
+from app.resilience import auth_breaker, CircuitOpenError
 from app.repositories.user_repository import UserRepository
 
 
@@ -69,6 +70,20 @@ def _grant_status(e: BaseException) -> int:
         return int(raw)
     except (TypeError, ValueError):
         return 400
+
+
+def _auth_failure(e: BaseException) -> bool:
+    """Breaker classification: is this login outcome an OUTAGE signal?
+
+    A grant that got ANSWERED (AuthApiError with status < 500) proves GoTrue
+    is up and talking — bad credentials / unconfirmed email are the caller's
+    business (mapped to 401/403/400 below) and are neutral for the breaker.
+    Transport failures (no reachable endpoint, TLS, timeouts) and any 5xx
+    from the auth service itself count.
+    """
+    if _is_grant_error(e):
+        return _grant_status(e) >= 500
+    return True
 
 
 def _go_true_user(res: Any) -> Any:
@@ -133,8 +148,12 @@ def _grant(email: str, password: str) -> Any:
     """
     from supabase import create_client
 
-    return create_client(SUPABASE_URL, SERVICE_KEY).auth.sign_in_with_password(
-        {"email": email, "password": password}
+    client = create_client(SUPABASE_URL, SERVICE_KEY)
+    # The password-grant network call runs behind the auth circuit breaker
+    # (app/resilience.py) with the outage classification in _auth_failure().
+    return auth_breaker.call(
+        lambda: client.auth.sign_in_with_password({"email": email, "password": password}),
+        is_failure=_auth_failure,
     )
 
 
@@ -152,6 +171,11 @@ class AuthService:
 
         try:
             res = _grant(email, password)
+        except CircuitOpenError:
+            raise HTTPException(
+                status_code=503,
+                detail="Authentication service is temporarily unavailable — try again shortly.",
+            )
         except Exception as e:
             if not _is_grant_error(e):
                 raise HTTPException(

@@ -4,7 +4,7 @@ Channel-agnostic store (channel='in_app' today) for in-app notifications.
 All isolation is enforced here: list/mark methods only ever touch rows whose
 recipient_id matches the acting user.
 """
-from app.repositories.base import SupabaseRepository, rows_of
+from app.repositories.base import SupabaseRepository, rows_of, run
 
 
 class NotificationRepository(SupabaseRepository):
@@ -58,7 +58,7 @@ class NotificationRepository(SupabaseRepository):
         return rows_of(self.table().select("id").lt("created_at", iso_cutoff))
 
     def delete_row(self, notification_id: str) -> None:
-        self.table().delete().eq("id", notification_id).execute()
+        run(self.table().delete().eq("id", notification_id))
 
     # -- writes (read receipts) --------------------------------------------
 
