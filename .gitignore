@@ -1,3 +1,24 @@
+```gitignore
+# Environment variables and secrets
 .env
+.env.*
+!.env.example
+
+# Python virtual environments
 .venv/
-app/__pycache__/
+venv/
+
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Logs
+logs/
+*.log
+
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+```

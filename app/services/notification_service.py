@@ -23,6 +23,9 @@ Layering:
   no DB — unit-tested in tests/unit/test_notification_rules.py.
 - The NotificationService class emits rows and runs the background jobs via
   injected repositories (notifications, users, tickets).
+
+Each background job run opens a root tracing span (hrdesk.jobs.*) when
+tracing is enabled; failure paths stay swallow-and-log.
 """
 import logging
 from datetime import datetime, timedelta, timezone
@@ -32,6 +35,7 @@ from fastapi import HTTPException
 from app.repositories.ticket_repository import TicketRepository
 from app.repositories.notification_repository import NotificationRepository
 from app.repositories.user_repository import UserRepository
+from app.observability import background_span
 
 log = logging.getLogger("hrdesk.notifications")
 
@@ -256,7 +260,11 @@ class NotificationService:
         SLA (Urgent: 4h, else 24h). Each ticket/threshold notifies at most once.
         A failing sweep only logs — background jobs must not crash the app."""
         try:
-            return self._run_sla_sweep_inner()
+            with background_span("hrdesk.jobs.sla_sweep") as span:
+                notified = self._run_sla_sweep_inner()
+                if span is not None and span.is_recording():
+                    span.set_attribute("hrdesk.notified", notified)
+                return notified
         except Exception:
             log.exception("SLA sweep failed")
             return 0
@@ -282,20 +290,27 @@ class NotificationService:
         """Delete read notifications older than 30 days and everything older
         than 180 days. Returns the number of rows deleted; failures only log."""
         try:
-            read_cutoff = (now_utc() - timedelta(days=RETENTION_READ_DAYS)).isoformat()
-            any_cutoff = (now_utc() - timedelta(days=RETENTION_UNREAD_DAYS)).isoformat()
-
-            doomed: set = set()
-            for r in self._notifications.ids_of_read_older_than(read_cutoff):
-                doomed.add(r["id"])
-            for r in self._notifications.ids_of_any_older_than(any_cutoff):
-                doomed.add(r["id"])
-
-            deleted = 0
-            for nid in doomed:
-                self._notifications.delete_row(nid)
-                deleted += 1
-            return deleted
+            with background_span("hrdesk.jobs.retention_cleanup") as span:
+                deleted = self._run_retention_cleanup_inner()
+                if span is not None and span.is_recording():
+                    span.set_attribute("hrdesk.deleted", deleted)
+                return deleted
         except Exception:
             log.exception("retention cleanup failed")
             return 0
+
+    def _run_retention_cleanup_inner(self) -> int:
+        read_cutoff = (now_utc() - timedelta(days=RETENTION_READ_DAYS)).isoformat()
+        any_cutoff = (now_utc() - timedelta(days=RETENTION_UNREAD_DAYS)).isoformat()
+
+        doomed: set = set()
+        for r in self._notifications.ids_of_read_older_than(read_cutoff):
+            doomed.add(r["id"])
+        for r in self._notifications.ids_of_any_older_than(any_cutoff):
+            doomed.add(r["id"])
+
+        deleted = 0
+        for nid in doomed:
+            self._notifications.delete_row(nid)
+            deleted += 1
+        return deleted

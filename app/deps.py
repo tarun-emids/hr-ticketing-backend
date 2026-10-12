@@ -17,6 +17,7 @@ from app.repositories.ticket_repository import TicketRepository
 from app.repositories.user_repository import UserRepository
 from app.services.auth_service import AuthService
 from app.services.draft_service import DraftService
+from app.services.log_ingest_service import LogIngestService
 from app.services.notification_service import NotificationService
 from app.services.ticket_service import TicketService
 from app.services.user_service import UserService
@@ -84,3 +85,8 @@ def get_draft_service(
     notifier: NotificationService = Depends(get_notification_service),
 ) -> DraftService:
     return DraftService(drafts, tickets, users, storage, notifier)
+
+
+def get_log_ingest_service() -> LogIngestService:
+    """Frontend log sink (no Supabase — writes through the logging system)."""
+    return LogIngestService()

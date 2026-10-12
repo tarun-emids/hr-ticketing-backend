@@ -84,6 +84,34 @@ class CategoryUpdate(CamelModel):
 
 
 # ---------------------------------------------------------------------------
+# Frontend log ingestion (POST /api/logs/ingest) — validated DTOs so untrusted
+# browser payloads never reach the logging system. Batches are small and
+# every free-form field is length-capped; the server re-stamps its own ids
+# and timestamps (see services/log_ingest_service.py).
+# ---------------------------------------------------------------------------
+
+_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_.-]{7,63}$"
+
+
+class FrontendLogEvent(CamelModel):
+    log_id: str = Field(pattern=_ID_PATTERN, max_length=64)
+    correlation_id: Optional[str] = Field(default=None, pattern=_ID_PATTERN, max_length=64)
+    level: Literal["INFO", "WARNING", "ERROR"] = "INFO"
+    event: str = Field(min_length=3, max_length=64)
+    method: Optional[Literal["GET", "POST", "PATCH", "PUT", "DELETE"]] = None
+    endpoint: Optional[str] = Field(default=None, max_length=200)
+    status_code: Optional[int] = Field(default=None, ge=100, le=599)
+    duration_ms: Optional[float] = Field(default=None, ge=0, le=120_000)
+    occurred_at: str = Field(min_length=10, max_length=40)
+
+
+class LogIngestRequest(CamelModel):
+    """Small batch of frontend events (endpoint is rate-limited per client)."""
+
+    events: list[FrontendLogEvent] = Field(min_length=1, max_length=20)
+
+
+# ---------------------------------------------------------------------------
 # Serializers (Supabase row -> API/frontend shape)
 # ---------------------------------------------------------------------------
 
