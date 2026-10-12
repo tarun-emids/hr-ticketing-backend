@@ -15,6 +15,7 @@ app/
   main.py                 # FastAPI wiring: controllers, lifespan, exception handler
   models.py               # request DTOs (pydantic) + row -> camelCase serializers
   deps.py                 # DI graph:  controller --Depends--> service --> repository --> client
+  observability.py        # structured logging, correlation ids, tracing, flow_operation
   controllers/            # request handling only — parse, call a service, return
     auth.py               #   POST /api/auth/login
     tickets.py            #   /api/tickets CRUD + actions + auto-assign + /api/agents/workload
@@ -22,12 +23,14 @@ app/
     drafts.py             #   /api/drafts CRUD + submit + attachments
     notifications.py      #   /api/notifications list/read/read-all/sweep
     users.py              #   /api/users, /api/users/agents, /api/meta
+    logs.py               #   POST /api/logs/ingest (frontend events → app.log)
   services/               # business rules — no HTTP, no database specifics
     ticket_service.py     #   create/list/get/replies, status/priority/category, assign, auto-assign, workload
     draft_service.py      #   draft CRUD, submit validation, attachment swap
-    notification_service.py  # pure recipient/message rules + emit + SLA sweep + retention jobs
+    notification_service.py  # recipient rules + emit + SLA sweep + retention jobs
     user_service.py       #   directory lists + static meta
     auth_service.py       #   GoTrue password grant + account join
+    log_ingest_service.py #   validated frontend events → the shared log
   repositories/           # the ONLY layer that touches Supabase
     base.py               #   unwrap/run/rows_of/first_of + SupabaseRepository base
     user_repository.py
@@ -140,6 +143,7 @@ with its thread (`turns`), or 404 if missing.
 | `assignTicket(id, assigneeId)` | `PATCH /api/tickets/{id}/assignee` (`{ assigneeId: uuid|null }`) |
 | `setPriority(id, priority)` | `PATCH /api/tickets/{id}/priority` |
 | `setCategory(id, category)` | `PATCH /api/tickets/{id}/category` |
+| `frontend logger.js` | `POST /api/logs/ingest` (browser events into the same log file) |
 | `USERS` / `HR_AGENTS` / lookups | `GET /api/users`, `GET /api/users/agents`, `GET /api/meta` |
 | (attachment file) | `POST /api/tickets/{id}/attachment` (multipart `file`), `GET /api/tickets/{id}/attachment` (signed URL) |
 
@@ -278,7 +282,7 @@ The SLA sweep/interval constants (`SLA_THRESHOLDS_HOURS`, `SLA_SWEEP_INTERVAL_SE
 
 ```bash
 cd backend && .venv/bin/activate
-pytest            # offline: FastSupabase fake, no network (integration is excluded)
+pytest            # offline: FakeSupabase fake, no network (integration is excluded)
 pytest -m integration   # live round-trips against the real project
 ```
 
@@ -344,3 +348,158 @@ received on the half-open probe is evidence of life and closes the circuit.
   `run()` classification), `tests/unit/test_auth_breaker.py`,
   `tests/api/test_breakers.py` (fail-fast through real endpoints,
   `/health/deps`, surface independence).
+## 12. Observability — logging, correlation, tracing
+
+### 12.1 The ID model (what joins what)
+
+| ID | Produced by | Purpose |
+| --- | --- | --- |
+| `request_id` (== frontend `correlationId`) | frontend `client.js` per API operation; backend accepts it via `X-Request-ID` only in a strict `^[A-Za-z0-9][A-Za-z0-9_.-]{7,63}$` format, otherwise generates a fresh UUID. Echoed on every response as `X-Request-ID` (CORS-exposed). | THE log join key. Stamped on **every** record emitted **within** that HTTP request (middleware, flow events, httpx lines, notification deliveries) via the request context var. |
+| `trace_id` / `span_id` | OpenTelemetry SDK. Browser: real spans from `@opentelemetry/sdk-trace-web` (`frontend/src/api/trace.js`) — ids are never fabricated; the `traceparent` header is injected by the W3C propagator. Backend: FastAPI instrumentation continues the same trace; httpx client spans (Supabase REST/Storage/Auth) and `db.postgrest.*` spans nest under it. | Distributed tracing in Jaeger (browser → backend → Supabase hops). NOT the same concept as `request_id`. |
+| `run_id` | `new_run_id()` (uuid4) — background jobs only (SLA sweep / retention). Jobs have no HTTP request context, so they carry a run id — never a fabricated request_id. | Correlates one scheduled sweep across all its records (`job.sla_sweep.*`). |
+| `log_id` | per JSON log record, at format time | unique per record, never a correlation key |
+| `frontend_log_id` (`event.logId`) | frontend `logger.js` per event | unique per ingested browser event |
+
+Flow snapshot (every request also gets the middleware line + httpx rows; `hrdesk`
+logs lifecycle lines, the notifications logger logs job failures with tracebacks):
+
+```
+hrdesk.request   – one line per HTTP request (method, path, status, duration_ms) — path only, never the query string
+hrdesk.flow      – started/completed/failed per business operation + layer milestones:
+    auth:            auth.login.*
+    users:           users.list.* / users.agents.* / users.meta.*
+    tickets:         tickets.create.* / tickets.list.* / tickets.get.* /
+                     tickets.reply.* / tickets.status.* / tickets.assign.* /
+                     tickets.priority.* / tickets.category.* / tickets.auto_assign.* /
+                     agents.workload.*
+    notifications:   notifications.list.* / notifications.mark_read.* /
+                     notifications.mark_all_read.* / notifications.sweep.*
+                     (GET unread-count is polled ~20 s — deliberately NOT instrumented;
+                      notification.deliver.* covers every delivery)
+    drafts:          drafts.create/list/get/update/delete/submit.* +
+                     drafts.attachment.upload/delete/url.*
+    attachments:     attachment.upload.* / attachment.url.*
+    milestones:      ticket.service.validation_completed / ticket.service.assignment_selected /
+                     draft.service.validation_completed / attachment.storage.upload_completed /
+                     attachment.storage.url_signed
+    repositories:    ticket.repository.insert_started/completed/failed /
+                     ticket.repository.update_started/completed/failed (patch COLUMNS only) /
+                     reply.repository.insert_started/completed
+    background jobs: job.sla_sweep.started/completed/failed /
+                     job.retention_cleanup.started/completed/failed (run_id + duration)
+    ingestion:       logs.ingest.rejected (WARNING on 429)
+    lifecycle:       app.startup / app.shutdown
+hrdesk.frontend  – ingested browser events ([frontend] http_request_* … keep the
+                   ORIGINAL operation's correlation_id + trace pair)
+httpx            – every Supabase HTTP round-trip: METHOD + sanitized path + "HTTP/2 <status>"
+```
+
+Event naming convention: `{resource}.{action}.started/completed/failed` for
+controller boundaries, `{resource}.{layer}.{action}_{phase}` for deeper layers,
+`job.{task}.{phase}` for scheduled work. Failure records carry `status` (HTTP
+code when the exception has one) and `error` (exception CLASS NAME only) — plus
+the full traceback via the unhandled-exception handler when the request fails.
+Deliberate Policies: no controller events on `/api/notifications/unread-count`
+(polling) or `/api/logs/ingest` (self-referential sink); read paths get no
+repository events; notification deliveries are logged around the write, not per row.
+
+### 12.2 Frontend log events → the same log file
+
+`POST /api/logs/ingest` (rate-limited per client IP, ≤20 validated events per
+batch). Behaviour that is **intentional**:
+
+- The ingest POST is its own HTTP request with its own server-generated
+  `request_id` (and its own trace when tracing is on) — it is a transport hop,
+  not the observed operation.
+- Each ingested event carries the **original** operation's `correlation_id` and —
+  when tracing is on — its `trace_id`/`span_id` as a strict pair stamped only as
+  a complete pair, so the record shows the original request's trace (no mix).
+  Events also carry the `operation` label (`tickets.create`, …) matching the
+  backend's flow events.
+- Recursion/loops are impossible: `client.js` skips `logEvent` for `/logs`
+  routes; the ingest uses plain `fetch` (not `request()`); there are no retries;
+  backend write failures return 202 `{"accepted": 0}`; Rate limit trips produce
+  a `logs.ingest.rejected` WARNING, never payload contents.
+
+### 12.3 Sensitive-data policy
+
+- Query strings never appear in logs — formatter-level redaction strips the
+  whole query part of any absolute URL and masks `token/password/secret/
+  authorization=...` pairs in plain text — covering httpx lines and exception
+  tracebacks at emit time.
+- Never logged: header values, tokens, cookies, passwords, request/response
+  bodies with HR data, ticket subjects/descriptions/replies, employee names or
+  emails, attachment file names or signed URLs (one-time tokens inside),
+  search text `q` (only its presence), patch VALUES (column names only), notification recipient ids.
+- Allowed metadata: timestamps, service name, level, event/operation names,
+  request/correlation id, trace/span ids (and run_id for jobs), sanitized
+  method + path, status codes, durations, counts, ticket refs, categories/
+  priorities/statuses, user UUIDs, storage paths (`TKT-n/<uuid>.<ext>`), file sizes/content types.
+- The client-supplied `X-Request-ID` is validated (strict format, regenerated
+  when invalid) — no log injection.
+
+### 12.4 Distributed tracing (Jaeger)
+
+```bash
+# separate terminal, alongside frontend + backend
+docker run --rm -p 16686:16686 -p 4318:4318 jaegertracing/all-in-one:latest
+open http://localhost:16686        # service selector: hrdesk-api
+```
+
+Verify: with `TRACE_ENABLED=true` (default), browse the app, then in the Jaeger
+UI pick service `hrdesk-api` → *Find recent traces*. One trace per browser API
+operation, containing the FastAPI server span (joined to the browser's
+traceparent), the `db.postgrest.*` spans and nested httpx client spans for the
+Supabase calls. The same `trace_id` appears in the corresponding app.log rows
+(search by `request_id`). The frontend spans themselves are not exported
+(context-only by design). Collector down? The backend keeps working; exporter
+failures are throttled by `OTEL_EXPORT_ERROR_LOG_WINDOW_SECONDS` (default 300 s,
+0 = off). `TRACE_ENABLED=false` skips instrumentation + export entirely.
+
+### 12.5 Log files
+
+- Default `backend/logs/app.log`, created automatically with `LOG_TO_FILE=true`
+  (directory auto-created on startup); midnight rotation;
+  `LOG_FILE_RETENTION_DAYS` kept (default 14); lazy-open — an unwritable path
+  degrades to console-only with one warning, never breaking requests.
+- `LOG_TO_FILE=false` → console only; no files touched. `logs/`/`*.log` are
+  gitignored — never commit logs.
+- Console format: `LOG_FORMAT=console|json`.
+
+Configuration reference (all also in `.env.example`):
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `LOG_LEVEL` | `info` | floor level for app logs |
+| `LOG_FORMAT` | `console` | console (human) or json (one object per line) |
+| `LOG_TO_FILE` | `true` | rotating JSON file enabled |
+| `LOG_FILE_PATH` | `backend/logs/app.log` | file location |
+| `LOG_FILE_RETENTION_DAYS` | `14` | rotated files kept |
+| `TRACE_ENABLED` | `true` | all tracing instrumentation + export on/off |
+| `OTEL_SERVICE_NAME` | `hrdesk-api` | trace service name + `service_name` log field |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4318` | OTLP/HTTP collector base (Jaeger all-in-one local) |
+| `OTEL_EXPORT_ERROR_LOG_WINDOW_SECONDS` | `300` | exporter-failure log throttle window (0 = off) |
+| `ATTACHMENT_SIGNED_URL_TTL` | `3600` | also the default TTL logged on signed-URL events |
+
+### 12.6 Following one request through the log
+
+Every request id (or the correlation id from the browser/devtools — each
+response echoes it as `X-Request-ID`) reconstructs the operation:
+
+```bash
+grep "734ee78c-2a13-41ad-9407-d3e80bead61b" backend/logs/app.log
+```
+
+Typical ticket-create sequence: frontend `http_request_start` → ingest receipt
+→ `tickets.create.started` → `ticket.service.validation_completed` →
+`ticket.repository.insert_started/_completed` → `notification.deliver.started/
+completed` → `tickets.create.completed` → httpx Supabase rows (sanitized) →
+middleware `POST /api/tickets -> 201 in …ms` → frontend
+`http_request_succeeded`. For background work, search the `run_id` instead:
+
+```bash
+grep '"run_id": "<32hex>"' backend/logs/app.log      # one scheduled sweep, end to end
+```
+
+Trace equivalent in Jaeger: search by the `trace_id` of any row above — the
+server span + db.postgrest + httpx children all share it.

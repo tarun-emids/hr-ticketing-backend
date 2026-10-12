@@ -48,6 +48,11 @@ OTEL_SERVICE_NAME = os.getenv("OTEL_SERVICE_NAME", "hrdesk-api")
 OTEL_EXPORTER_OTLP_ENDPOINT = os.getenv(
     "OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318"
 )
+# Collapse repeated OTLP exporter failure logs to at most one raw line per
+# window (seconds) plus a backend summary. 0/negative disables the throttle.
+OTEL_EXPORT_ERROR_LOG_WINDOW_SECONDS = int(
+    os.getenv("OTEL_EXPORT_ERROR_LOG_WINDOW_SECONDS", "300")
+)
 # --- persistent log files ---------------------------------------------------
 # daily-rotating JSON log file (see README §11: location + retention)
 LOG_TO_FILE = os.getenv("LOG_TO_FILE", "true").strip().lower() not in (

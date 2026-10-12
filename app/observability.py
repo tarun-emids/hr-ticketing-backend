@@ -26,12 +26,32 @@ the HTTP hops this backend actually makes. Jaeger is the trace viewer;
 persistent APPLICATION logs are the rotating JSON files, not Jaeger.
 
 Security: never log header values, secrets, or ticket content (subject,
-description, reply text). Query strings are deliberately never logged
-(enum values in some paths, e.g. drafts employee ids, would otherwise be
-routine). Client-supplied request ids are validated against a strict
-format and regenerated when invalid — an attacker cannot inject log
-content through ``X-Request-ID``. Attributes allowed in spans: ticket
-ref, status, category, priority, user UUIDs, counts.
+description, reply text). Query strings are deliberately never logged —
+the shared redaction used by BOTH formatters strips the whole query part
+of any absolute URL in a record (PostgREST filters carry user ids and
+enum values that must not leak) and masks dangerous ``name=value`` pairs
+in non-URL text, so third-party lines (httpx logs the full request URL)
+and exception tracebacks are covered too, at emit time. Client-supplied
+request ids are validated against a strict format and regenerated when
+invalid — an attacker cannot inject log content through ``X-Request-ID``.
+Attributes allowed in events/spans: ticket ref, status, category,
+priority, user UUIDs, counts.
+
+Layer events: ``flow_event(event, operation, **fields)`` emits one
+structured record per meaningful business-layer step; ``flow_operation()``
+is the standard started/completed/failed trio around a whole operation
+(controllers use it for every endpoint; background jobs supply their own
+``run_id`` because no HTTP request context exists for them). The event
+naming convention is ``{resource}.{action}[.{layer}]_{phase}`` — see
+controllers/*, services/*, repositories/ticket_repository.py and the
+notification jobs for every live event.
+
+Exporter noise: when the OTLP collector (Jaeger) is not running, the OTLP
+exporter logs one line per failed batch. ``_ExportErrorRateFilter``
+collapses that to at most one raw line per
+``OTEL_EXPORT_ERROR_LOG_WINDOW_SECONDS`` (default 300) plus a backend
+summary line; the application itself is never affected. Startup and
+request handling succeed whether or not a collector is reachable.
 """
 import contextvars
 import json
@@ -57,6 +77,7 @@ except ImportError:  # pragma: no cover — only before deps are installed
 
 LOGGER_NAME = "hrdesk"
 REQUEST_LOGGER_NAME = "hrdesk.request"
+FLOW_LOGGER_NAME = "hrdesk.flow"
 
 # Response header echoing the request id (lowercase over the wire).
 REQUEST_ID_HEADER = "x-request-id"
@@ -66,20 +87,34 @@ REQUEST_ID_HEADER = "x-request-id"
 # quotes/braces; anything else is discarded and a fresh UUID is generated.
 _CLIENT_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{7,63}$")
 
-# Values of sensitive query parameters are masked in EVERYTHING we emit
-# (console + log files). Redaction happens in the formatters, at emit time,
-# so third-party lines (e.g. httpx logs the full request URL with its query
-# string) are covered too. Denylist parameter names; values may be percent-
-# encoded as usual in URLs.
+# Absolute URLs that carry a query string are cut at the '?' (path alone is
+# kept for correlation). httpx logs the full request URL of every Supabase
+# round-trip — REST/Storage/Auth filters ride in the query as selectors like
+# ``id=eq.<uuid>``, i.e. record references that must not reach the log.
+# Applied at emit time in the formatters, so third-party lines and exception
+# tracebacks are covered too.
+_URL_WITH_QUERY_RE = re.compile(r"https?://[^\s\"'<>]*\?[^\s\"'<>]*", re.IGNORECASE)
+
+# Non-URL ``name=value`` snippets with sensitive names are masked in EVERYTHING
+# we emit (console + log files). Denylist parameter names; values may be
+# percent-encoded as usual.
 _SENSITIVE_PARAM_RE = re.compile(
     r"(?i)(access_?token|api_?key|apikey|secret|token|password|passwd|authorization)"
     r"=[^&\s\"']+"
 )
 
 
+def _strip_url_queries(text: str) -> str:
+    """Drop the query part of every absolute URL in the text (path kept)."""
+    return _URL_WITH_QUERY_RE.sub(lambda m: m.group(0).split("?", 1)[0], text)
+
+
 def _redact_sensitive(text: str) -> str:
-    """Mask `name=value` query parameters whose name matches the denylist."""
-    return _SENSITIVE_PARAM_RE.sub(lambda m: f"{m.group(1)}=[REDACTED]", text)
+    """Sanitize emitted text: 1) sensitive ``name=value`` pairs masked,
+    2) any absolute URL loses its whole query string (see module docstring)."""
+    return _strip_url_queries(
+        _SENSITIVE_PARAM_RE.sub(lambda m: f"{m.group(1)}=[REDACTED]", text)
+    )
 
 # Per-request correlation context (safe across async request handling).
 _request_id_var: contextvars.ContextVar = contextvars.ContextVar(
@@ -90,6 +125,13 @@ _request_id_var: contextvars.ContextVar = contextvars.ContextVar(
 def new_request_id() -> str:
     """Standard UUID used for request ids and (fresh) incoming defaults."""
     return str(uuid.uuid4())
+
+
+def new_run_id() -> str:
+    """Identifier for one background-job run (no HTTP request context exists
+    for jobs, so they get a run id instead of — never instead of faking — a
+    request id; plain uuid4 hex, same shape log ids/SpanExporters use)."""
+    return uuid.uuid4().hex
 
 
 def resolve_request_id(client_value) -> str:
@@ -113,6 +155,101 @@ def get_request_id():
 def get_logger(name: str = LOGGER_NAME) -> logging.Logger:
     """App logger — after setup_logging() it is structured and correlation-aware."""
     return logging.getLogger(name)
+
+
+def flow_event(event: str, operation: str | None = None, **fields) -> None:
+    """One structured record for a business-layer step.
+
+    The record message IS the event name; useful fields ride the ``http``
+    extra, which the JSON formatter merges into the record:
+    ``source=backend`` + ``event`` + ``operation`` + whatever the caller
+    passed (duration_ms, method, path, ticket_ref …). ``request_id`` is
+    stamped explicitly from the request context (when one exists —
+    background jobs have none and that is correct, not a bug);
+    ``trace_id``/``span_id`` are stamped by the formatters from the active
+    span. Logging must never break the flow it observes, so failures are
+    swallowed.
+    """
+    http = {"source": "backend", "event": event}
+    request_id = _request_id_var.get()
+    if request_id:
+        http["request_id"] = request_id
+    if operation:
+        http["operation"] = operation
+    for key, value in fields.items():
+        if value is not None:
+            http[key] = value
+    try:
+        get_logger(FLOW_LOGGER_NAME).log(logging.INFO, event, extra={"http": http})
+    except Exception:  # pragma: no cover — events must never break business flow
+        pass
+
+
+def flow_warning(event: str, operation: str | None = None, **fields) -> None:
+    """Same structured record as flow_event but at WARNING level (used for
+    rejections/throttles that operators should see without being errors)."""
+    http = {"source": "backend", "event": event}
+    request_id = _request_id_var.get()
+    if request_id:
+        http["request_id"] = request_id
+    if operation:
+        http["operation"] = operation
+    for key, value in fields.items():
+        if value is not None:
+            http[key] = value
+    try:
+        get_logger(FLOW_LOGGER_NAME).log(logging.WARNING, event, extra={"http": http})
+    except Exception:  # pragma: no cover — events must never break business flow
+        pass
+
+
+@contextmanager
+def flow_operation(event_base: str, operation: str | None = None,
+                   method: str | None = None, path: str | None = None, **fields):
+    """Standard started/completed/failed event trio around one operation.
+
+    Controllers wrap each endpoint body in this; the emitted names are
+    ``{event_base}.started``, ``{event_base}.completed`` and
+    ``{event_base}.failed`` (uniform across the app — e.g.
+    ``tickets.create.started``). The failure path classifies errors without
+    exposing them: the HTTP status when the exception carries one
+    (duck-typed ``status_code`` — FastAPI's HTTPException and friends) plus
+    the exception class name. Never obscures tracebacks: exceptions simply
+    propagate after the record. The yielded dict collects result fields
+    (``op["ticket_ref"] = ...``) merged into the ``completed`` record;
+    ``duration_ms`` is measured here, once, at the boundary.
+    """
+    started = time.perf_counter()
+    flow_event(
+        f"{event_base}.started",
+        operation=operation,
+        method=method,
+        path=path,
+        **fields,
+    )
+    extras: dict = {}
+
+    def _emit(suffix: str, exc: Exception | None = None) -> None:
+        payload = {
+            "operation": operation,
+            "method": method,
+            "path": path,
+            "duration_ms": round((time.perf_counter() - started) * 1000, 1),
+            **fields,
+            **extras,
+        }
+        if exc is not None:
+            status = getattr(exc, "status_code", None)
+            payload["status"] = status if isinstance(status, int) else None
+            payload["error"] = type(exc).__name__
+        flow_event(f"{event_base}.{suffix}", **payload)
+
+    try:
+        yield extras
+    except Exception as exc:
+        _emit("failed", exc)
+        raise
+    _emit("completed")
 
 
 # ---------------------------------------------------------------------------
@@ -174,7 +311,8 @@ class JsonLogFormatter(_CorrelationFormatter):
         if record.exc_info:
             exc_info = record.exc_info
             payload["exception_type"] = exc_info[0].__name__ if exc_info[0] else "Exception"
-            payload["exc"] = self.formatException(exc_info)
+            # traceback text too: exception args may embed URLs/params
+            payload["exc"] = _redact_sensitive(self.formatException(exc_info))
         return json.dumps(payload, ensure_ascii=False)
 
 
@@ -190,7 +328,7 @@ class ConsoleLogFormatter(_CorrelationFormatter):
         if request_id:
             line += f"  req={request_id}"  # full id; grep/eyeball friendly
         if record.exc_info:
-            line += "\n" + self.formatException(record.exc_info)
+            line += "\n" + _redact_sensitive(self.formatException(record.exc_info))
         return line
 
 
@@ -262,6 +400,69 @@ def _spans_endpoint() -> str:
     return base if base.endswith("/v1/traces") else base + "/v1/traces"
 
 
+class _ExportErrorRateFilter(logging.Filter):
+    """Collapse a flood of OTLP exporter failure lines into one per window.
+
+    With the collector (Jaeger) down, the exporter logs a WARNING per retry
+    attempt plus an ERROR per failed batch — previously dozens of lines per
+    request relied on BatchSpanProcessor batching alone. This filter lets the
+    FIRST failure line of each ``window_seconds`` pass, drops the rest, and
+    emits one backend summary line when the next window opens with prior
+    suppression. ``window <= 0`` disables the throttle entirely (config knob,
+    see .env.example). Request handling is never affected by export failures.
+    """
+
+    def __init__(self, window_seconds: int):
+        super().__init__()
+        self._window = int(window_seconds)
+        self._last_pass: float | None = None
+        self._dropped = 0
+
+    def filter(self, record: logging.LogRecord) -> bool:  # noqa: A003 (logging API)
+        if self._window <= 0:
+            return True
+        now = time.monotonic()
+        if self._last_pass is None or now - self._last_pass >= self._window:
+            if self._dropped:
+                get_logger().warning(
+                    "tracing export failures: %d exporter log lines suppressed "
+                    "in the last %ds window — OTLP collector down? "
+                    "(start Jaeger per README §11, or set TRACE_ENABLED=false)",
+                    self._dropped,
+                    self._window,
+                )
+                self._dropped = 0
+            self._last_pass = now
+            return True
+        self._dropped += 1
+        return False
+
+
+def _install_exporter_log_throttle() -> None:
+    """Attach the shared rate filter to the loggers that report export failures.
+
+    One filter instance is shared so the counters span both the exporter's
+    transient-retry warnings and the SDK batch-export errors. Installation
+    happens once per process from setup_tracing(); a module-level guard keeps
+    repeated calls from adding the same filter twice (double-counted drops).
+    """
+    global _EXPORT_LOG_THROTTLE
+    if _EXPORT_LOG_THROTTLE is not None:
+        return
+    window = app_config.OTEL_EXPORT_ERROR_LOG_WINDOW_SECONDS
+    if window <= 0:
+        return  # throttle disabled by configuration
+    _EXPORT_LOG_THROTTLE = _ExportErrorRateFilter(window)
+    for logger_name in (
+        "opentelemetry.exporter.otlp.proto.http.trace_exporter",
+        "opentelemetry.sdk.trace",
+    ):
+        logging.getLogger(logger_name).addFilter(_EXPORT_LOG_THROTTLE)
+
+
+_EXPORT_LOG_THROTTLE: _ExportErrorRateFilter | None = None
+
+
 def setup_tracing(app) -> bool:
     """Initialize the TracerProvider + instrumentors.
 
@@ -270,8 +471,8 @@ def setup_tracing(app) -> bool:
     bool
         True when instrumentation is active; False when disabled by config
         or when the OpenTelemetry packages are not installed. Export failures
-        (e.g. Jaeger not running) are logged by the SDK and never break
-        request handling.
+        (e.g. Jaeger not running) never break request handling; their log
+        noise is rate-limited by _ExportErrorRateFilter (see above).
     """
     if not app_config.TRACE_ENABLED:
         get_logger().info("tracing disabled (TRACE_ENABLED=false)")
@@ -299,6 +500,7 @@ def setup_tracing(app) -> bool:
         BatchSpanProcessor(OTLPSpanExporter(endpoint=_spans_endpoint(), timeout=5))
     )
     _otel_trace.set_tracer_provider(provider)
+    _install_exporter_log_throttle()
 
     # Client spans for every Supabase postgrest/gotrue/storage HTTP call.
     HTTPXClientInstrumentor().instrument()
@@ -459,7 +661,7 @@ class RequestLogMiddleware:
         fields = {
             "source": "backend",
             "method": scope["method"],
-            "path": scope["path"],
+            "path": scope["path"],  # ASGI scope path never includes the query
             "status": status,
         }
         if duration_ms is not None:

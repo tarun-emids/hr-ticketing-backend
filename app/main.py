@@ -13,6 +13,8 @@ Observability (all opt-out via env — see app/observability.py and README §11)
       request (method, path, status, ms; /health + preflights unlogged)
     - setup_tracing(app): OpenTelemetry server+httpx spans, OTLP export,
       joining the frontend's W3C traceparent
+    - lifecycle records: app.startup / app.shutdown (hrdesk.flow) around the
+      lifespan jobs; tracing enabled/disabled lines from setup_tracing
 
 Run:
     uvicorn app.main:app --reload --port 8000
@@ -37,6 +39,7 @@ from app.repositories.ticket_repository import TicketRepository
 from app.repositories.user_repository import UserRepository
 from app.observability import (
     RequestLogMiddleware,
+    flow_event,
     get_logger,
     record_error_on_current_span,
     setup_logging,
@@ -63,6 +66,12 @@ async def lifespan(_app: FastAPI):
     """Background jobs: first-response SLA sweep + notification retention.
     Runs immediately on boot, then every SLA_SWEEP_INTERVAL_SECONDS. Each job
     swallows its own errors, so a Supabase outage only pauses them."""
+    flow_event(
+        "app.startup",
+        operation="app.lifecycle",
+        trace_enabled=app_config.TRACE_ENABLED,
+        log_to_file=app_config.LOG_TO_FILE,
+    )
     svc = _notification_service_for_jobs()
 
     async def _jobs():
@@ -75,6 +84,7 @@ async def lifespan(_app: FastAPI):
     try:
         yield
     finally:
+        flow_event("app.shutdown", operation="app.lifecycle")
         jobs.cancel()
         try:
             await jobs
@@ -122,7 +132,8 @@ app.include_router(logs.router, prefix="/api")
 
 @app.get("/health")
 def health():
-    """Liveness only — does not touch Supabase."""
+    """Liveness only — does not touch Supabase (also excluded from the
+    request log and from tracing spans on purpose)."""
     return {"ok": True}
 
 
