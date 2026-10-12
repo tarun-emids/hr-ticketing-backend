@@ -77,32 +77,32 @@ def _builder_table(builder) -> Optional[str]:
 
 def run(q):
 
-"""Execute a build behind the db circuit breaker, mapping PostgREST errors
-to HTTP 4xx/5xx-with-detail.
-"""
-op = _builder_op(q)
-table = _builder_table(q)
-span_name = f"db.postgrest.{table}.{op}" if table else f"db.postgrest.{op}"
-attrs = {"db.system": "postgres", "db.operation": op}
-if table:
-    attrs["db.postgrest.table"] = table
+    """Execute a build behind the db circuit breaker, mapping PostgREST errors
+    to HTTP 4xx/5xx-with-detail.
+    """
+    op = _builder_op(q)
+    table = _builder_table(q)
+    span_name = f"db.postgrest.{table}.{op}" if table else f"db.postgrest.{op}"
+    attrs = {"db.system": "postgres", "db.operation": op}
+    if table:
+        attrs["db.postgrest.table"] = table
 
-try:
-    with db_span(span_name, attrs):
-        return unwrap(db_breaker.call(q.execute, is_failure=_db_failure))
-except CircuitOpenError:
-    raise HTTPException(
-        status_code=503,
-        detail="Database is temporarily unavailable — try again shortly.",
-    )
-except APIError as e:
-    detail = getattr(e, "message", None) or str(e)
-    code = str(getattr(e, "code", "") or "")
-    status = 400 if code.startswith("23") else 502
-    raise HTTPException(
-        status_code=status,
-        detail=f"Database rejected the write: {detail}",
-    )
+    try:
+        with db_span(span_name, attrs):
+            return unwrap(db_breaker.call(q.execute, is_failure=_db_failure))
+    except CircuitOpenError:
+        raise HTTPException(
+            status_code=503,
+            detail="Database is temporarily unavailable — try again shortly.",
+        )
+    except APIError as e:
+        detail = getattr(e, "message", None) or str(e)
+        code = str(getattr(e, "code", "") or "")
+        status = 400 if code.startswith("23") else 502
+        raise HTTPException(
+            status_code=status,
+            detail=f"Database rejected the write: {detail}",
+        )
 
 def rows_of(q) -> list:
     data = run(q)
