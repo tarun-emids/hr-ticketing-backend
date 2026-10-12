@@ -13,6 +13,12 @@ and walkthroughs — this file is operating instructions for working here.
 # live tests against real Supabase (needs backend/.env + seeded schema)
 .venv/Scripts/python.exe -m pytest -m integration
 
+# format + lint — mandatory gate on every code change (also auto-run on every
+# .py Write/Edit by the PostToolUse hook in .claude/settings.json — see below)
+# Windows copy: .venv/Scripts/ruff.exe | WSL repo: source .venv/bin/activate, then plain `ruff`
+.venv/Scripts/ruff.exe format .
+.venv/Scripts/ruff.exe check .
+
 # server (docs at /docs, liveness at /health, breaker states at /health/deps)
 .venv/Scripts/python.exe -m uvicorn app.main:app --reload --port 8000
 ```
@@ -20,8 +26,7 @@ and walkthroughs — this file is operating instructions for working here.
 `pytest` and `ruff` are **not** in requirements.txt — after creating the venv,
 install deps plus `pytest` and `ruff` explicitly.
 
-
-## Formatting & linting (ruff — gate on every code change)
+## Formatting & linting (ruff — enforced by PostToolUse hook)
 
 `pyproject.toml` at the repo root is the single source of truth: line length
 100, 4-space indents, double quotes, isort import ordering with `app` as
@@ -29,31 +34,20 @@ first-party, rule set E/W/F/I/B/SIM minus E501 (the formatter owns line
 length) and minus B008 (FastAPI's `Depends(...)`-in-default DI pattern).
 Formatting target is py314.
 
-**Every new or edited `.py` file must pass `ruff format` and `ruff check`
-before a change counts as done.** When writing code, conform by hand while
-typing — don't defer to the tools:
+Enforcement is mechanical: `.claude/settings.json` runs a PostToolUse hook
+(`.claude/hooks/format_py.ps1` on Windows, `format_py.sh` on WSL) after every
+Write/Edit; it `ruff format`s the touched `.py` file, applies safe
+`ruff check --fix`es, and returns any leftover findings to the model as a
+blocking error. One-time adoption (run once after installing ruff):
+`ruff format .` + `ruff check . --fix`, then the offline pytest suite;
+expect a whitespace/import-order-only diff.
 
-- comments/docstrings/long string literals: wrap to ≤100 columns manually.
-  E501 stays off, so the linter will NOT police them — that is a manual duty,
-  not an exemption.
-- imports: three blocks in order — stdlib → external packages → first-party
-  `app` — alphabetical within each block; multiline imports split one item
-  per line with a trailing comma.
-- magic trailing comma: a collection that ends with a trailing comma stays
-  multiline. Never collapse an existing multiline shape back to one line
-  (this pins `ruff format` to the same output on every re-run).
-- keep the current type-hint style (`Optional[X]`, `list[dict]`, `dict[...]`).
-  No modernization to `X | None` unless explicitly asked (pyupgrade rules are
-  intentionally not enabled).
-- stick to formatter output; don't invent spacing/splitting that the tools
-  would redo. If ruff isn't runnable in the session (this Cowork VM cannot
-  install packages), write conforming code at the keyboard and end the task
-  by giving the exact commands for the user — the diff between what you
-  wrote and ruff's output must be whitespace-only or empty.
-
-One-time adoption (run once after installing ruff): `ruff format .` +
-`ruff check . --fix`, then the offline pytest suite; expect a
-whitespace/import-order-only diff.
+When ruff can't run in-session (sandboxed VMs), hand-conform instead: wrap
+comments/docstrings/long strings at ≤100 columns, import blocks stdlib →
+external → first-party `app` alphabetically, magic trailing comma (multiline
+collections never collapse), keep the current `Optional[X]` type-hint style,
+and end the task with the two commands for the user. ruff is the only
+formatter — no prettier, no black.
 
 ## Environment quirks (check these before debugging anything odd)
 
@@ -110,6 +104,7 @@ app/
 
 ## Verification workflow
 
-After any code change: offline suite green first; if behavior is
-observable at runtime, start the server and exercise the change (curl the
-endpoint), watching `/health/deps` when touching Supabase paths.
+After any code change: `ruff format` + `ruff check` clean first, then the
+offline suite green; if behavior is observable at runtime, start the server
+and exercise the change (curl the endpoint), watching `/health/deps` when
+touching Supabase paths.
