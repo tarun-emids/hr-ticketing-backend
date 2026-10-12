@@ -1,0 +1,18 @@
+# Ruff: lint + format config for the backend. Installed/enforced through the
+# pre-commit hooks in .pre-commit-config.yaml (see README §9 "Commit hooks").
+target-version = "py312"
+line-length = 100
+extend-exclude = [".venv", "venv", "__pycache__", "scripts/knowledge_base_pdfs", "app/kb_seed"]
+
+[lint]
+# E/F/W = pycodestyle + pyflake, I = import sorting (ruff-format stays style-
+# neutral otherwise). E501 is ignored because ruff-format cannot break long
+# comments/docstrings; line-length still guides everything it can reformat.
+select = ["E", "F", "W", "I"]
+ignore = ["E501"]
+
+[lint.per-file-ignores]
+# the seed script adjusts sys.path before importing app.kb_seed
+"scripts/seed_knowledge_base.py" = ["E402"]
+# test helpers seed fakes used by other modules before they are defined
+"tests/conftest.py" = ["E402"]

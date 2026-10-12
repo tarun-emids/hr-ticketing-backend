@@ -223,6 +223,22 @@ curl -X PATCH http://localhost:8000/api/tickets/TKT-101/assignee \
 - Errors: `404` unknown ticket, `413` file too large, `422` validation/unknown user,
   `400/502` database or storage rejection.
 
+### Commit hooks (formatting + linting)
+
+Backend commits run Ruff (lint + black-style format) through `pre-commit`
+(rules in `.ruff.toml`, hooks in `.pre-commit-config.yaml`). Enable once per
+clone, then commit as usual:
+
+```bash
+pip install pre-commit
+pre-commit install
+pre-commit run --all-files        # one-time pass over the existing code
+```
+
+`ruff-check --fix` auto-fixes what can be auto-fixed; `ruff-format` reformats
+staged files black-style before the commit is final. To bypass in an
+emergency explicitly: `git commit --no-verify`.
+
 ## 10. In-app notifications
 
 Event-driven and channel-agnostic. Ticket writes stay decoupled from
