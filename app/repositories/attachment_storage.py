@@ -4,11 +4,17 @@ The `ticket-attachments` bucket is private; files are only readable through
 short-lived signed URLs the backend signs on demand (service-role key).
 This is the boundary that turns storage/network failures into the API's
 413/502 responses — services never see storage3 exceptions.
+
+Every outbound call rides the storage circuit breaker under the shared
+retry policy (app/retries.py): signing is a replayable read; upload/remove
+retry only when the request provably never left the client (guarded) —
+storage PUTs replayed after an ambiguous failure could duplicate objects.
 """
 from fastapi import HTTPException
 
 from app.config import ATTACHMENT_BUCKET, MAX_ATTACHMENT_BYTES, SIGNED_URL_TTL, SUPABASE_URL
 from app.resilience import storage_breaker, CircuitOpenError
+from app.retries import GUARDED, READ, retry_call
 
 MB = 1024 * 1024
 
@@ -31,11 +37,14 @@ class AttachmentStorageRepository:
     def upload(self, path: str, data: bytes, content_type: str | None) -> None:
         storage = self._client.storage.from_(ATTACHMENT_BUCKET)
         try:
-            storage_breaker.call(lambda: storage.upload(
-                path,
-                data,
-                {"contentType": content_type or "application/octet-stream", "upsert": "false"},
-            ))
+            retry_call(
+                lambda: storage_breaker.call(lambda: storage.upload(
+                    path,
+                    data,
+                    {"contentType": content_type or "application/octet-stream", "upsert": "false"},
+                )),
+                mode=GUARDED,
+            )
         except CircuitOpenError:
             raise HTTPException(
                 status_code=503,
@@ -46,8 +55,11 @@ class AttachmentStorageRepository:
 
     def remove(self, path: str) -> None:
         try:
-            storage_breaker.call(
-                lambda: self._client.storage.from_(ATTACHMENT_BUCKET).remove([path])
+            retry_call(
+                lambda: storage_breaker.call(
+                    lambda: self._client.storage.from_(ATTACHMENT_BUCKET).remove([path])
+                ),
+                mode=GUARDED,
             )
         except CircuitOpenError:
             raise HTTPException(
@@ -60,8 +72,11 @@ class AttachmentStorageRepository:
     def signed_url(self, path: str, ttl: int = SIGNED_URL_TTL) -> str:
         storage = self._client.storage.from_(ATTACHMENT_BUCKET)
         try:
-            res = storage_breaker.call(
-                lambda: storage.create_signed_url(path, self.clamp_ttl(ttl))
+            res = retry_call(
+                lambda: storage_breaker.call(
+                    lambda: storage.create_signed_url(path, self.clamp_ttl(ttl))
+                ),
+                mode=READ,
             )
         except CircuitOpenError:
             raise HTTPException(

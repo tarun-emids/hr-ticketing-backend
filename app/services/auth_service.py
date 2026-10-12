@@ -23,6 +23,7 @@ from app.config import SERVICE_KEY, SUPABASE_URL
 from app.models import user_out
 from app.resilience import auth_breaker, CircuitOpenError
 from app.repositories.user_repository import UserRepository
+from app.retries import GUARDED, retry_call
 
 
 def _load_auth_api_error():
@@ -150,10 +151,16 @@ def _grant(email: str, password: str) -> Any:
 
     client = create_client(SUPABASE_URL, SERVICE_KEY)
     # The password-grant network call runs behind the auth circuit breaker
-    # (app/resilience.py) with the outage classification in _auth_failure().
-    return auth_breaker.call(
-        lambda: client.auth.sign_in_with_password({"email": email, "password": password}),
-        is_failure=_auth_failure,
+    # (app/resilience.py) with the outage classification in _auth_failure(),
+    # riding the shared retry policy in GUARDED mode (app/retries.py): a
+    # connect-phase replay is safe because the grant never left the client,
+    # while bad credentials / read timeouts must never re-send the password.
+    return retry_call(
+        lambda: auth_breaker.call(
+            lambda: client.auth.sign_in_with_password({"email": email, "password": password}),
+            is_failure=_auth_failure,
+        ),
+        mode=GUARDED,
     )
 
 
