@@ -58,9 +58,7 @@ def test_db_breaker_fails_fast_and_health_deps_reflects_it(api, monkeypatch):
     # threshold reached: everything database-backed is now an instant 503
     r_open = api.client.get("/api/users")
     assert r_open.status_code == 503
-    assert (
-        r_open.json()["detail"] == "Database is temporarily unavailable — try again shortly."
-    )
+    assert r_open.json()["detail"] == "Database is temporarily unavailable — try again shortly."
 
     deps = api.client.get("/health/deps").json()["breakers"]
     assert deps["db"]["state"] == OPEN
@@ -80,7 +78,7 @@ def test_storage_breaker_fails_fast_independently_of_db(api):
         files={"file": ("notes.txt", io.BytesIO(b"payload"), "text/plain")},
     )
 
-    for i in range(THRESHOLD):
+    for _i in range(THRESHOLD):
         r = upload()
         assert r.status_code == 502
         assert "Storage upload failed" in r.json()["detail"]

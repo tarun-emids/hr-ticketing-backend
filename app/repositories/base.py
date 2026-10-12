@@ -16,6 +16,7 @@ semantic db span lives (no-op when tracing is off): the span name carries
 the operation and, when readable, the table — the actual HTTP hop remains
 visible in the httpx client span nested inside it.
 """
+
 import re
 from typing import Any, Optional
 
@@ -23,9 +24,11 @@ from fastapi import HTTPException
 from postgrest.exceptions import APIError
 
 from app.observability import db_span
-from app.resilience import db_breaker, CircuitOpenError
+from app.resilience import CircuitOpenError, db_breaker
 
-UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+UUID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
 
 
 def _db_failure(e: BaseException) -> bool:
@@ -76,7 +79,6 @@ def _builder_table(builder) -> Optional[str]:
 
 
 def run(q):
-
     """Execute a build behind the db circuit breaker, mapping PostgREST errors
     to HTTP 4xx/5xx-with-detail.
     """
@@ -94,7 +96,7 @@ def run(q):
         raise HTTPException(
             status_code=503,
             detail="Database is temporarily unavailable — try again shortly.",
-        )
+        ) from None
     except APIError as e:
         detail = getattr(e, "message", None) or str(e)
         code = str(getattr(e, "code", "") or "")
@@ -102,7 +104,8 @@ def run(q):
         raise HTTPException(
             status_code=status,
             detail=f"Database rejected the write: {detail}",
-        )
+        ) from e
+
 
 def rows_of(q) -> list:
     data = run(q)

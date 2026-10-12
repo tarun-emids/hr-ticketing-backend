@@ -9,6 +9,7 @@ Wiring: every repository gets its client through app/deps.py, which resolves
 `app.config.get_client()` at call time — so patching app.config.get_client
 swaps in the fake for ALL layers at once (controllers -> services -> repos).
 """
+
 import os
 import uuid as uuidlib
 from datetime import datetime, timedelta, timezone
@@ -170,7 +171,11 @@ class FakeTable:
     def on_insert(self, payload):
         now = self.supa.clock()
         if self.name == "users":
-            row = {**payload, "id": payload.get("id", _uuid(uuidlib.uuid4().int % 10**12)), "created_at": now}
+            row = {
+                **payload,
+                "id": payload.get("id", _uuid(uuidlib.uuid4().int % 10**12)),
+                "created_at": now,
+            }
             self.rows.append(row)
             return row
         if self.name == "tickets":
@@ -289,6 +294,7 @@ class FakeSupabase:
                 "notifications": self.notifications,
                 "ticket_drafts": self.ticket_drafts,
             }
+
         return tables()[name]
 
     def clock(self):
@@ -306,51 +312,68 @@ class FakeSupabase:
             ("Ruth Meyer", "ruth.hr@acme.com", "agent", U["ruth"]),
         ]
         for name, email, role, uid in people:
-            self.users.rows.append({
-                "id": uid, "name": name, "email": email, "role": role,
-                "created_at": self.clock(),
-            })
+            self.users.rows.append(
+                {
+                    "id": uid,
+                    "name": name,
+                    "email": email,
+                    "role": role,
+                    "created_at": self.clock(),
+                }
+            )
 
     def seed_tickets(self):
         """Three demo tickets mirroring src/data/store.js shape. Created via the
         fake itself so ref numbering/id sequence behaves like the real identity."""
         t101 = {
-            "employee_id": U["priya"], "category": "Payroll",
+            "employee_id": U["priya"],
+            "category": "Payroll",
             "subject": "May payslip missing shift allowance",
             "description": "The May payslip does not include the 12 weekend shift hours I worked.",
-            "priority": "Medium", "status": "Open",
+            "priority": "Medium",
+            "status": "Open",
         }
         t102 = {
-            "employee_id": U["marcus"], "category": "Leave",
+            "employee_id": U["marcus"],
+            "category": "Leave",
             "subject": "Question about carryover of PTO days",
             "description": "I have 5 pending PTO days. Do they carry over into next quarter or expire?",
-            "priority": "High", "status": "In Progress",
-            "assignee_id": U["alicia"], "first_reply_at": self.clock(),
+            "priority": "High",
+            "status": "In Progress",
+            "assignee_id": U["alicia"],
+            "first_reply_at": self.clock(),
             "attachment_path": "TKT-102/f1ca9.pdf",
             "attachment_name": "payslip.pdf",
             "attachment_size": 42,
         }
         t103 = {
-            "employee_id": U["dana"], "category": "Policy",
+            "employee_id": U["dana"],
+            "category": "Policy",
             "subject": "Policy on remote work equipment",
             "description": "Can I expense a second monitor given the new hybrid work policy applies to me?",
-            "priority": "Urgent", "status": "Resolved",
-            "assignee_id": U["ben"], "resolved_at": self.clock(),
+            "priority": "Urgent",
+            "status": "Resolved",
+            "assignee_id": U["ben"],
+            "resolved_at": self.clock(),
         }
         for spec in (t101, t102, t103):
             self.tickets.on_insert(spec)
         # one agent reply on TKT-102 (needs the ticket row first)
-        self.replies.on_insert({
-            "ticket_id": self.tickets.rows[1]["id"], "author_id": U["alicia"],
-            "author_role": "agent", "body": "Looking into the carryover policy now.",
-        })
+        self.replies.on_insert(
+            {
+                "ticket_id": self.tickets.rows[1]["id"],
+                "author_id": U["alicia"],
+                "author_role": "agent",
+                "body": "Looking into the carryover policy now.",
+            }
+        )
 
 
 @pytest.fixture()
 def api(monkeypatch):
     """TestClient + FakeSupabase wired in place of the real Supabase client."""
-    from app import main as app_main
     from app import config as app_config
+    from app import main as app_main
 
     fake = FakeSupabase()
     fake.seed_users()

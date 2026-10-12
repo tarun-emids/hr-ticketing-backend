@@ -30,6 +30,7 @@ Env knobs (read in app/config.py): CIRCUIT_BREAKER_FAILURE_THRESHOLD
 (default 5 consecutive failures), CIRCUIT_BREAKER_RECOVERY_SECONDS
 (default 30 s cooldown before the half-open probe).
 """
+
 import logging
 import threading
 import time
@@ -156,7 +157,11 @@ class CircuitBreaker:
         log.warning(
             "circuit '%s' %s after %d consecutive failures (last: %s: %s) "
             "— callers get an immediate 503 for %.0fs",
-            self.name, verb, self._failures, type(exc).__name__, exc,
+            self.name,
+            verb,
+            self._failures,
+            type(exc).__name__,
+            exc,
             self.recovery_timeout,
         )
         self._failures = self.failure_threshold  # counter freezes while open
@@ -183,15 +188,21 @@ class CircuitBreaker:
             self._close_locked()
 
 
-db_breaker = CircuitBreaker("db",
-                            failure_threshold=app_config.BREAKER_FAILURE_THRESHOLD,
-                            recovery_timeout=app_config.BREAKER_RECOVERY_SECONDS)
-auth_breaker = CircuitBreaker("auth",
-                              failure_threshold=app_config.BREAKER_FAILURE_THRESHOLD,
-                              recovery_timeout=app_config.BREAKER_RECOVERY_SECONDS)
-storage_breaker = CircuitBreaker("storage",
-                                 failure_threshold=app_config.BREAKER_FAILURE_THRESHOLD,
-                                 recovery_timeout=app_config.BREAKER_RECOVERY_SECONDS)
+db_breaker = CircuitBreaker(
+    "db",
+    failure_threshold=app_config.BREAKER_FAILURE_THRESHOLD,
+    recovery_timeout=app_config.BREAKER_RECOVERY_SECONDS,
+)
+auth_breaker = CircuitBreaker(
+    "auth",
+    failure_threshold=app_config.BREAKER_FAILURE_THRESHOLD,
+    recovery_timeout=app_config.BREAKER_RECOVERY_SECONDS,
+)
+storage_breaker = CircuitBreaker(
+    "storage",
+    failure_threshold=app_config.BREAKER_FAILURE_THRESHOLD,
+    recovery_timeout=app_config.BREAKER_RECOVERY_SECONDS,
+)
 
 
 def breakers_snapshot() -> dict:

@@ -27,15 +27,16 @@ Layering:
 Each background job run opens a root tracing span (hrdesk.jobs.*) when
 tracing is enabled; failure paths stay swallow-and-log.
 """
+
 import logging
 from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException
 
-from app.repositories.ticket_repository import TicketRepository
-from app.repositories.notification_repository import NotificationRepository
-from app.repositories.user_repository import UserRepository
 from app.observability import background_span
+from app.repositories.notification_repository import NotificationRepository
+from app.repositories.ticket_repository import TicketRepository
+from app.repositories.user_repository import UserRepository
 
 log = logging.getLogger("hrdesk.notifications")
 
@@ -65,6 +66,7 @@ def _now_iso() -> str:
 # ---------------------------------------------------------------------------
 # Recipient rules (pure — no DB access, easy to unit test)
 # ---------------------------------------------------------------------------
+
 
 def created_recipients(agent_ids: list) -> list:
     """A new ticket informs every HR agent (the actor is the employee)."""
@@ -107,6 +109,7 @@ def sla_threshold_hours(priority: str) -> int:
 # ---------------------------------------------------------------------------
 # Message construction (pure)
 # ---------------------------------------------------------------------------
+
 
 def _ticket_ids(ticket: dict) -> tuple:
     """Emit callers pass either a raw DB row (id=uuid, ref='TKT-n') or an
@@ -161,6 +164,7 @@ def build_row(recipient_id: str, ticket: dict, event: str, actor_name, payload: 
 # Service: emit + background jobs
 # ---------------------------------------------------------------------------
 
+
 class NotificationService:
     """Emits notification rows and runs the two background jobs (SLA sweep,
     retention cleanup). Holds repositories only — safe to construct in any
@@ -208,8 +212,9 @@ class NotificationService:
             "createdAt": row["created_at"],
         }
 
-    def list_notifications(self, user_id: str, *, unread_only: bool,
-                           limit: int, offset: int) -> list[dict]:
+    def list_notifications(
+        self, user_id: str, *, unread_only: bool, limit: int, offset: int
+    ) -> list[dict]:
         """Newest-first page for one user (chronological, not unread-first)."""
         rows = self._notifications.list_for_recipient(
             user_id, unread_only=unread_only, fetch_limit=limit, offset=offset
@@ -230,8 +235,14 @@ class NotificationService:
 
     # -- emit ---------------------------------------------------------------
 
-    def emit(self, ticket: dict, event: str, actor: dict | None, recipient_ids: list,
-             payload: dict | None = None) -> int:
+    def emit(
+        self,
+        ticket: dict,
+        event: str,
+        actor: dict | None,
+        recipient_ids: list,
+        payload: dict | None = None,
+    ) -> int:
         """Persist notifications for one event. Raises on DB failure — callers
         that must never break a ticket action use safe_notify() instead."""
         actor_name = (actor or {}).get("name")
@@ -245,8 +256,14 @@ class NotificationService:
         self._notifications.insert_rows(rows)
         return len(rows)
 
-    def safe_notify(self, ticket: dict, event: str, actor: dict | None, recipient_ids: list,
-                    payload: dict | None = None) -> None:
+    def safe_notify(
+        self,
+        ticket: dict,
+        event: str,
+        actor: dict | None,
+        recipient_ids: list,
+        payload: dict | None = None,
+    ) -> None:
         """Fail-safe emit: a notification failure must never break a ticket action."""
         try:
             self.emit(ticket, event, actor, recipient_ids, payload)

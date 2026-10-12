@@ -7,6 +7,7 @@ app/deps.py; nothing else imports it directly.
 (The old `db()` shortcut for the tickets table no longer exists — the ticket
 repository always builds a fresh `client.table("tickets")` chain itself.)
 """
+
 import os
 from pathlib import Path
 from typing import Optional
@@ -42,17 +43,16 @@ LOG_LEVEL = os.getenv("LOG_LEVEL", "info")
 LOG_FORMAT = os.getenv("LOG_FORMAT", "console").strip().lower()
 # false removes ALL tracing instrumentation and export (zero overhead)
 TRACE_ENABLED = os.getenv("TRACE_ENABLED", "true").strip().lower() not in (
-    "false", "0", "no", "off"
+    "false",
+    "0",
+    "no",
+    "off",
 )
 OTEL_SERVICE_NAME = os.getenv("OTEL_SERVICE_NAME", "hrdesk-api")
-OTEL_EXPORTER_OTLP_ENDPOINT = os.getenv(
-    "OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318"
-)
+OTEL_EXPORTER_OTLP_ENDPOINT = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
 # --- persistent log files ---------------------------------------------------
 # daily-rotating JSON log file (see README §11: location + retention)
-LOG_TO_FILE = os.getenv("LOG_TO_FILE", "true").strip().lower() not in (
-    "false", "0", "no", "off"
-)
+LOG_TO_FILE = os.getenv("LOG_TO_FILE", "true").strip().lower() not in ("false", "0", "no", "off")
 LOG_FILE_PATH = os.getenv("LOG_FILE_PATH") or str(BASE_DIR / "logs" / "app.log")
 LOG_FILE_RETENTION_DAYS = int(os.getenv("LOG_FILE_RETENTION_DAYS", "14"))
 

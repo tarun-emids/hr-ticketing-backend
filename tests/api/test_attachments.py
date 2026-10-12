@@ -27,8 +27,10 @@ def test_upload_attachment_success(api):
 
 def test_signed_url_for_stored_attachment(api):
     api.client.post(
-        "/api/tickets", json={
-            "employeeId": U["priya"], "category": "Other",
+        "/api/tickets",
+        json={
+            "employeeId": U["priya"],
+            "category": "Other",
             "subject": "Office badge replacement needed",
             "description": "My badge stopped working at the lobby reader and HR needs a replacement.",
         },

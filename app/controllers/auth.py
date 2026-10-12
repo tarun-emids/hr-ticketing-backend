@@ -1,4 +1,5 @@
 """Auth endpoints. The GoTrue grant + account join live in AuthService."""
+
 from fastapi import APIRouter, Depends
 
 from app.deps import get_auth_service

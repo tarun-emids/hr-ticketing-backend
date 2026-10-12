@@ -4,12 +4,13 @@ The ticket reference resolver moved here from the old routers/tickets_core:
 tickets are addressed as `TKT-<n>` (what the frontend uses in URLs) or by raw
 Postgres uuid, and every repo lookup needs the same (column, value) mapping.
 """
+
 import re
 from typing import Optional
 
 from app.repositories.base import (
-    SupabaseRepository,
     UUID_RE,
+    SupabaseRepository,
     first_of,
     rows_of,
 )
@@ -77,9 +78,9 @@ class TicketRepository(SupabaseRepository):
         (same shape the old notifications module produced with db())."""
         out = []
         for status in statuses:
-            out.extend(rows_of(
-                self.table().select("*").is_("assignee_id", None).eq("status", status)
-            ))
+            out.extend(
+                rows_of(self.table().select("*").is_("assignee_id", None).eq("status", status))
+            )
         return out
 
     # -- writes ------------------------------------------------------------
@@ -102,14 +103,15 @@ class TicketRepository(SupabaseRepository):
         )
 
     def insert_reply(self, row: dict) -> dict:
-        return rows_of(
-            self._client.table("replies").insert(row).select("*")
-        )[0]
+        return rows_of(self._client.table("replies").insert(row).select("*"))[0]
 
     def has_agent_reply(self, ticket_uuid: str) -> bool:
         return bool(
             rows_of(
-                self._client.table("replies").select("id")
-                .eq("ticket_id", ticket_uuid).eq("author_role", "agent").limit(1)
+                self._client.table("replies")
+                .select("id")
+                .eq("ticket_id", ticket_uuid)
+                .eq("author_role", "agent")
+                .limit(1)
             )
         )

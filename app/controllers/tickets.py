@@ -4,6 +4,7 @@ No rules here — every handler delegates to TicketService and returns its
 result. Route paths and declaration order match the previous routers
 exactly (frontend contract / FastAPI path-matching unchanged).
 """
+
 from typing import Optional
 
 from fastapi import APIRouter, Depends
@@ -76,24 +77,32 @@ def add_reply(tid: str, payload: ReplyCreate, svc: TicketService = Depends(get_t
 
 
 @router.patch("/tickets/{tid}/status")
-def update_status(tid: str, payload: StatusUpdate, svc: TicketService = Depends(get_ticket_service)):
+def update_status(
+    tid: str, payload: StatusUpdate, svc: TicketService = Depends(get_ticket_service)
+):
     """store.js updateStatus parity: Resolved stamps resolvedAt, Closed also
     stamps closedBy, reopening clears both."""
     return svc.update_status(tid, status=payload.status, actor_id=payload.actor_id)
 
 
 @router.patch("/tickets/{tid}/assignee")
-def assign_ticket(tid: str, payload: AssigneeUpdate, svc: TicketService = Depends(get_ticket_service)):
+def assign_ticket(
+    tid: str, payload: AssigneeUpdate, svc: TicketService = Depends(get_ticket_service)
+):
     return svc.assign_by_key(tid, payload.assignee_id)
 
 
 @router.patch("/tickets/{tid}/priority")
-def set_priority(tid: str, payload: PriorityUpdate, svc: TicketService = Depends(get_ticket_service)):
+def set_priority(
+    tid: str, payload: PriorityUpdate, svc: TicketService = Depends(get_ticket_service)
+):
     return svc.set_priority(tid, payload.priority)
 
 
 @router.patch("/tickets/{tid}/category")
-def set_category(tid: str, payload: CategoryUpdate, svc: TicketService = Depends(get_ticket_service)):
+def set_category(
+    tid: str, payload: CategoryUpdate, svc: TicketService = Depends(get_ticket_service)
+):
     return svc.set_category(tid, payload.category)
 
 

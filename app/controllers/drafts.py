@@ -1,5 +1,6 @@
 """Employee ticket drafts: CRUD, submit, attachments. Rules live in
 DraftService (ownership scoping, submit validation, attachment swap)."""
+
 from fastapi import APIRouter, Depends, UploadFile
 
 from app.config import SIGNED_URL_TTL
@@ -52,7 +53,9 @@ def delete_draft(draft_id: str, employeeId: str, svc: DraftService = Depends(get
 
 
 @router.post("/{draft_id}/submit")
-def submit_draft(draft_id: str, payload: DraftSubmit, svc: DraftService = Depends(get_draft_service)):
+def submit_draft(
+    draft_id: str, payload: DraftSubmit, svc: DraftService = Depends(get_draft_service)
+):
     """Validate and convert the saved draft into a normal ticket."""
     return svc.submit_draft(draft_id, employee_id=payload.employee_id)
 
@@ -66,14 +69,19 @@ def upload_draft_attachment(
 ):
     data = file.file.read()
     return svc.upload_attachment(
-        draft_id, employeeId, filename=file.filename,
-        content_type=file.content_type, data=data,
+        draft_id,
+        employeeId,
+        filename=file.filename,
+        content_type=file.content_type,
+        data=data,
     )
 
 
 @router.delete("/{draft_id}/attachment", status_code=STATUS_NO_BODY)
 def delete_draft_attachment(
-    draft_id: str, employeeId: str, svc: DraftService = Depends(get_draft_service),
+    draft_id: str,
+    employeeId: str,
+    svc: DraftService = Depends(get_draft_service),
 ):
     svc.delete_attachment(draft_id, employeeId)
 

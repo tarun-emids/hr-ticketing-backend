@@ -8,6 +8,7 @@ someone else's notifications through this controller.
 Input validation (state / limit / offset bounds) stays at the edge; the
 service enforces data isolation.
 """
+
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.deps import get_notification_service
@@ -37,8 +38,9 @@ def list_notifications(
     if offset < 0:
         raise HTTPException(status_code=422, detail="offset must be >= 0")
 
-    return svc.list_notifications(userId, unread_only=(state == "unread"),
-                                  limit=limit, offset=offset)
+    return svc.list_notifications(
+        userId, unread_only=(state == "unread"), limit=limit, offset=offset
+    )
 
 
 @router.get("/unread-count")
@@ -48,14 +50,19 @@ def unread_count(userId: str, svc: NotificationService = Depends(get_notificatio
 
 
 @router.post("/read-all")
-def mark_all_read(body: NotificationRead, svc: NotificationService = Depends(get_notification_service)):
+def mark_all_read(
+    body: NotificationRead, svc: NotificationService = Depends(get_notification_service)
+):
     svc.require_user(body.user_id)
     return {"updated": svc.mark_all_read(body.user_id)}
 
 
 @router.post("/{notification_id}/read")
-def mark_read(notification_id: str, body: NotificationRead,
-              svc: NotificationService = Depends(get_notification_service)):
+def mark_read(
+    notification_id: str,
+    body: NotificationRead,
+    svc: NotificationService = Depends(get_notification_service),
+):
     svc.require_user(body.user_id)
     return svc.mark_read(notification_id, body.user_id)
 
