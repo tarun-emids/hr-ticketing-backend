@@ -282,12 +282,65 @@ pytest            # offline: FastSupabase fake, no network (integration is exclu
 pytest -m integration   # live round-trips against the real project
 ```
 
+## 11. Resilience — circuit breakers
 
+Supabase is the only external dependency and is reached over the network in
+three independent places. When one of them is down, overloaded or stalled,
+callers used to pay a full network round trip every time — and the failing
+service kept getting hammered. Each surface now sits behind a small
+(thread-safe, stdlib-only) circuit breaker in `app/resilience.py`, so
+outages degrade fast instead of slowly:
 
-## tracing using Jaegar
-## run this in a separate terminal while the frontend and backend are running
-# trace viewer
-```bash
-docker run --rm -p 127.0.0.1:16686:16686 -p 127.0.0.1:4318:4318 jaegertracing/all-in-one:latest
-open http://127.0.0.1:16686   # service: hrdesk-api
 ```
+db_breaker       PostgREST — every repository call funnels through
+                 run()/rows_of()/first_of() in app/repositories/base.py
+auth_breaker     GoTrue password grant — app/services/auth_service._grant()
+storage_breaker  Storage bucket ops — app/repositories/attachment_storage.py
+```
+
+States: `closed` (normal) → `open` after N consecutive failures — every call
+fails instantly with **503**, nothing touches the network → after the
+cooldown ONE half-open probe is admitted; the rest of the concurrent callers
+still fail fast (no stampede). Probe success → closed again with counters
+reset; probe failure → open for another cooldown. Transitions are logged
+under the `hrdesk.resilience` logger.
+
+| Surface | Counts as failure | Never counts (neutral) |
+| --- | --- | --- |
+| db (PostgREST) | non-`23xxx` APIError (→502 today), transport errors | `23xxx` constraint violations (→400) |
+| auth (GoTrue) | transport errors, `AuthApiError` ≥ 500 | answered grant errors (401/403/422) |
+| storage | any exception | — (`check_size` runs before any call) |
+
+Neutrality is the point: a caller's own mistake or a bad password proves the
+dependency is HEALTHY and must not trip anything. Conversely a neutral error
+received on the half-open probe is evidence of life and closes the circuit.
+
+- **Env knobs** (in `app/config.py`): `CIRCUIT_BREAKER_FAILURE_THRESHOLD`
+  (default 5), `CIRCUIT_BREAKER_RECOVERY_SECONDS` (default 30). Set the
+  threshold huge to effectively disable a breaker during local debugging.
+- **Visibility**: `GET /health/deps` (no Supabase calls, answers mid-outage):
+
+  ```json
+  {"breakers": {"db": {"name": "db", "state": "open", "failures": 5, "secondsUntilProbe": 12.4},
+                "auth": {"name": "auth", "state": "closed", "failures": 0}}}
+  ```
+
+- **HTTP behavior while open**: db-backed endpoints →
+  `503 {"detail": "Database is temporarily unavailable — try again shortly."}`;
+  login → `503 "Authentication service is temporarily unavailable…"`;
+  attachments → `503 "Attachment storage is temporarily unavailable…"`.
+  The frontend sees immediate 503s and recovers automatically once the probe
+  succeeds — no code change needed.
+- **Background jobs** (SLA sweep, retention) route through the same `run()`,
+  so an open db circuit also stops them from hammering PostgREST every 30
+  minutes; failures are already swallowed by their own error handling.
+- **Network timeouts** (verified against installed supabase-py 2.32):
+  PostgREST 120 s, Storage 20 s, auth uses raw httpx default (5 s). All
+  bounded, so a stalled dependency eventually raises and the breaker can
+  count it — no extra configuration required. (The 120 s PostgREST ceiling
+  is generous for this workload; trimming it via `ClientOptions` would make
+  the first few failures trip the breaker faster — future tuning.)
+- Test coverage: `tests/unit/test_circuit_breaker.py` (state machine +
+  `run()` classification), `tests/unit/test_auth_breaker.py`,
+  `tests/api/test_breakers.py` (fail-fast through real endpoints,
+  `/health/deps`, surface independence).

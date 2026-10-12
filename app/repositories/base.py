@@ -23,8 +23,24 @@ from fastapi import HTTPException
 from postgrest.exceptions import APIError
 
 from app.observability import db_span
+from app.resilience import db_breaker, CircuitOpenError
 
 UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+
+
+def _db_failure(e: BaseException) -> bool:
+    """Breaker classification: is this PostgREST outcome an OUTAGE signal?
+
+    Postgres constraint violations (code 23xxx) are the CALLER's fault —
+    the API already answers them 400 — so they are neutral for the breaker;
+    a stream of those must never slowly trip the circuit.
+    Any other APIError plus every non-APIError exception (timeouts,
+    connection errors) is already mapped to 502 today, i.e. the shared
+    dependency failing: those count.
+    """
+    if isinstance(e, APIError):
+        return not str(getattr(e, "code", "") or "").startswith("23")
+    return True
 
 
 def unwrap(res: Any):
@@ -60,22 +76,33 @@ def _builder_table(builder) -> Optional[str]:
 
 
 def run(q):
-    """Execute a build, mapping PostgREST errors to HTTP 4xx/5xx-with-detail."""
-    op = _builder_op(q)
-    table = _builder_table(q)
-    span_name = f"db.postgrest.{table}.{op}" if table else f"db.postgrest.{op}"
-    attrs = {"db.system": "postgres", "db.operation": op}
-    if table:
-        attrs["db.postgrest.table"] = table
-    try:
-        with db_span(span_name, attrs):
-            return unwrap(q.execute())
-    except APIError as e:
-        detail = getattr(e, "message", None) or str(e)
-        code = str(getattr(e, "code", "") or "")
-        status = 400 if code.startswith("23") else 502
-        raise HTTPException(status_code=status, detail=f"Database rejected the write: {detail}")
 
+"""Execute a build behind the db circuit breaker, mapping PostgREST errors
+to HTTP 4xx/5xx-with-detail.
+"""
+op = _builder_op(q)
+table = _builder_table(q)
+span_name = f"db.postgrest.{table}.{op}" if table else f"db.postgrest.{op}"
+attrs = {"db.system": "postgres", "db.operation": op}
+if table:
+    attrs["db.postgrest.table"] = table
+
+try:
+    with db_span(span_name, attrs):
+        return unwrap(db_breaker.call(q.execute, is_failure=_db_failure))
+except CircuitOpenError:
+    raise HTTPException(
+        status_code=503,
+        detail="Database is temporarily unavailable — try again shortly.",
+    )
+except APIError as e:
+    detail = getattr(e, "message", None) or str(e)
+    code = str(getattr(e, "code", "") or "")
+    status = 400 if code.startswith("23") else 502
+    raise HTTPException(
+        status_code=status,
+        detail=f"Database rejected the write: {detail}",
+    )
 
 def rows_of(q) -> list:
     data = run(q)
