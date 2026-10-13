@@ -1,4 +1,4 @@
-"""Auth endpoints. The GoTrue grant + account join live in AuthService."""
+"""Authentication endpoints backed by provisioned PostgreSQL password hashes."""
 
 from fastapi import APIRouter, Depends
 
@@ -11,6 +11,5 @@ router = APIRouter(tags=["auth"])
 
 @router.post("/auth/login")
 def login(payload: LoginRequest, svc: AuthService = Depends(get_auth_service)):
-    """POST /api/auth/login — real password sign-in (GoTrue password grant,
-    then resolve the public.users row for the app-level id/name/role)."""
+    """POST /api/auth/login — verify credentials and return the app user."""
     return svc.login(payload.email, payload.password)

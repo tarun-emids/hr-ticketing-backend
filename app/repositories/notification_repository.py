@@ -1,79 +1,92 @@
-"""Notification rows (public.notifications).
+"""PostgreSQL access to private in-app notifications."""
 
-Channel-agnostic store (channel='in_app' today) for in-app notifications.
-All isolation is enforced here: list/mark methods only ever touch rows whose
-recipient_id matches the acting user.
-"""
+from datetime import datetime
 
-from app.repositories.base import SupabaseRepository, rows_of, run
+from psycopg_pool import ConnectionPool
+
+from app.repositories.base import UUID_RE, as_uuid, insert_many_rows, rows_of, run
 
 
-class NotificationRepository(SupabaseRepository):
-    TABLE_NAME = "notifications"
-
-    # -- writes ------------------------------------------------------------
+class NotificationRepository:
+    def __init__(self, database: ConnectionPool):
+        self._database = database
 
     def insert_rows(self, rows: list[dict]) -> list[dict]:
-        return rows_of(self.table().insert(rows).select("id"))
-
-    # -- reads (all hard-scoped to the acting user) -------------------------
+        return insert_many_rows(self._database, "notifications", rows, json_columns=("payload",))
 
     def list_for_recipient(
         self, user_id: str, *, unread_only: bool, fetch_limit: int, offset: int
     ) -> list[dict]:
-        """Newest-first. Windows with limit(offset+limit) then slices in
-        Python, exactly like the original endpoint did (offset applies after
-        filtering, chronologically — not unread-first)."""
-        query = (
-            self.table()
-            .select("*")
-            .eq("recipient_id", user_id)
-            .order("created_at", desc=True)
-            .limit(offset + fetch_limit)
-        )
+        query = "SELECT * FROM notifications WHERE recipient_id = %s"
+        params = [as_uuid(user_id)]
         if unread_only:
-            query = query.eq("read", False)
-        return rows_of(query)[offset:]
+            query += " AND read = FALSE"
+        query += " ORDER BY created_at DESC LIMIT %s OFFSET %s"
+        params.extend((fetch_limit, offset))
+        return rows_of(self._database, query, tuple(params), table="notifications")
 
     def unread_rows(self, user_id: str) -> list[dict]:
-        return rows_of(self.table().select("id").eq("recipient_id", user_id).eq("read", False))
-
-    # -- reads (background jobs) -------------------------------------------
+        return rows_of(
+            self._database,
+            "SELECT id FROM notifications WHERE recipient_id = %s AND read = FALSE",
+            (as_uuid(user_id),),
+            table="notifications",
+        )
 
     def prior_sla_thresholds(self, ticket_uuid: str) -> set:
-        """Thresholds already notified for one ticket — the sweep fires at most
-        once per ticket/threshold."""
         prior = rows_of(
-            self.table().select("payload").eq("ticket_id", ticket_uuid).eq("type", "sla_breached")
+            self._database,
+            "SELECT payload FROM notifications WHERE ticket_id = %s AND type = %s",
+            (as_uuid(ticket_uuid), "sla_breached"),
+            table="notifications",
         )
-        return {p.get("payload", {}).get("thresholdHours") for p in prior}
+        return {row.get("payload", {}).get("thresholdHours") for row in prior}
 
     def ids_of_read_older_than(self, iso_cutoff: str) -> list[dict]:
-        return rows_of(self.table().select("id").eq("read", True).lt("created_at", iso_cutoff))
+        return rows_of(
+            self._database,
+            "SELECT id FROM notifications WHERE read = TRUE AND created_at < %s",
+            (datetime.fromisoformat(iso_cutoff.replace("Z", "+00:00")),),
+            table="notifications",
+        )
 
     def ids_of_any_older_than(self, iso_cutoff: str) -> list[dict]:
-        return rows_of(self.table().select("id").lt("created_at", iso_cutoff))
+        return rows_of(
+            self._database,
+            "SELECT id FROM notifications WHERE created_at < %s",
+            (datetime.fromisoformat(iso_cutoff.replace("Z", "+00:00")),),
+            table="notifications",
+        )
 
     def delete_row(self, notification_id: str) -> None:
-        run(self.table().delete().eq("id", notification_id))
-
-    # -- writes (read receipts) --------------------------------------------
+        run(
+            self._database,
+            "DELETE FROM notifications WHERE id = %s",
+            (as_uuid(notification_id),),
+            fetch="none",
+            table="notifications",
+        )
 
     def mark_read(self, notification_id: str, user_id: str, read_at: str) -> list[dict]:
-        """Mark one row read; rows not owned by user_id simply don't match."""
+        if not UUID_RE.fullmatch(notification_id) or not UUID_RE.fullmatch(user_id):
+            return []
         return rows_of(
-            self.table()
-            .update({"read": True, "read_at": read_at})
-            .eq("id", notification_id)
-            .eq("recipient_id", user_id)
-            .select("*")
+            self._database,
+            "UPDATE notifications SET read = TRUE, read_at = %s "
+            "WHERE id = %s AND recipient_id = %s RETURNING *",
+            (
+                datetime.fromisoformat(read_at.replace("Z", "+00:00")),
+                as_uuid(notification_id),
+                as_uuid(user_id),
+            ),
+            table="notifications",
         )
 
     def mark_all_read(self, user_id: str, read_at: str) -> list[dict]:
         return rows_of(
-            self.table()
-            .update({"read": True, "read_at": read_at})
-            .eq("recipient_id", user_id)
-            .eq("read", False)
-            .select("*")
+            self._database,
+            "UPDATE notifications SET read = TRUE, read_at = %s "
+            "WHERE recipient_id = %s AND read = FALSE RETURNING *",
+            (datetime.fromisoformat(read_at.replace("Z", "+00:00")), as_uuid(user_id)),
+            table="notifications",
         )

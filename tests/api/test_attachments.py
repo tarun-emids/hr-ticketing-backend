@@ -42,16 +42,16 @@ def test_signed_url_for_stored_attachment(api):
     body = r.json()
     assert body["name"] == "note.pdf"
     assert body["size"] == 3
-    assert body["url"].startswith("https://fake.supabase.co/storage/v1/object/sign/")
+    assert body["url"].startswith("http://testserver/api/attachments/file/")
     assert body["expiresInSeconds"] == 3600
 
 
 def test_signed_url_ttl_clamped(api):
     upload(api, "TKT-102")
-    api.client.get("/api/tickets/TKT-102/attachment", params={"ttl": 5})
-    assert api.fake.last_signed_ttl == 60
-    api.client.get("/api/tickets/TKT-102/attachment", params={"ttl": 999999})
-    assert api.fake.last_signed_ttl == 86400
+    low = api.client.get("/api/tickets/TKT-102/attachment", params={"ttl": 5})
+    high = api.client.get("/api/tickets/TKT-102/attachment", params={"ttl": 999999})
+    assert low.json()["expiresInSeconds"] == 60
+    assert high.json()["expiresInSeconds"] == 86400
 
 
 def test_reupload_replaces_previous_attachment(api):
@@ -63,8 +63,18 @@ def test_reupload_replaces_previous_attachment(api):
     t = r.json()
     assert t["attachment"]["name"] == "two.txt"
     assert t["attachment"]["size"] == len(b"second payload")
-    keys = list(api.fake.storage_files.keys())
-    assert all(k[1].endswith(".txt") for k in keys)
+    paths = api.fake.execute("SELECT path FROM attachments")
+    assert len(paths) == 1
+    assert paths[0]["path"].endswith(".txt")
+
+
+def test_signed_url_downloads_database_attachment(api):
+    upload(api, "TKT-101", content=b"private database attachment")
+    url = api.client.get("/api/tickets/TKT-101/attachment").json()["url"]
+    response = api.client.get(url)
+    assert response.status_code == 200
+    assert response.content == b"private database attachment"
+    assert response.headers["content-type"] == "application/pdf"
 
 
 def test_upload_too_large_413(api):
@@ -79,8 +89,7 @@ def test_upload_to_missing_ticket_404(api):
     assert r.status_code == 404
 
 
-def test_upload_storage_failure_502(api):
-    api.fake.fail_uploads = True
-    r = upload(api, "TKT-101")
-    assert r.status_code == 502
-    assert "Storage upload failed" in r.json()["detail"]
+def test_invalid_signed_url_is_rejected(api):
+    r = api.client.get("/api/attachments/file/not-a-valid-token")
+    assert r.status_code == 404
+    assert r.json()["detail"] == "Attachment link is invalid or expired."

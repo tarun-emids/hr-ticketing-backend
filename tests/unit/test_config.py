@@ -14,8 +14,8 @@ BACKEND_DIR = Path(__file__).resolve().parent.parent.parent
 
 CODE = (
     "import json, app.config as c; "
-    "print(json.dumps({'url': c.SUPABASE_URL, 'ttl': c.SIGNED_URL_TTL, "
-    "'cors': c.CORS_ORIGINS, 'bucket': c.ATTACHMENT_BUCKET, "
+    "print(json.dumps({'url': c.DATABASE_URL, 'ttl': c.SIGNED_URL_TTL, "
+    "'cors': c.CORS_ORIGINS, "
     "'max': c.MAX_ATTACHMENT_BYTES}))"
 )
 
@@ -36,20 +36,18 @@ def run_config(extra_env):
 def test_env_overrides_are_honored():
     cfg = run_config(
         {
-            "SUPABASE_URL": "https://unit.example.com/",
-            "SUPABASE_SERVICE_ROLE_KEY": "k",
+            "DATABASE_URL": "postgresql://test:secret@localhost:5432/unit",
             "ATTACHMENT_SIGNED_URL_TTL": "120",
             "CORS_ORIGINS": "http://a.test,http://b.test",
         }
     )
-    assert cfg["url"] == "https://unit.example.com"  # trailing slash stripped
+    assert cfg["url"] == "postgresql://test:secret@localhost:5432/unit"
     assert cfg["ttl"] == 120
     assert cfg["cors"] == ["http://a.test", "http://b.test"]
 
 
 def test_constants_match_schema_contract():
     cfg = run_config({})
-    assert cfg["bucket"] == "ticket-attachments"
     assert cfg["max"] == 5 * 1024 * 1024
     assert isinstance(cfg["ttl"], int) and cfg["ttl"] > 0
 
@@ -61,15 +59,14 @@ def test_empty_env_gives_safe_fallbacks():
     assert cfg["cors"] == []
 
 
-def test_missing_client_raises_runtime_error(monkeypatch):
-    monkeypatch.setenv("SUPABASE_URL", "")
-    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "")
+def test_missing_database_url_raises_runtime_error(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "")
     import importlib
 
     import app.config as cfg
 
     m = importlib.reload(cfg)
-    m._client = None
-    with pytest.raises(RuntimeError, match="Missing SUPABASE_URL"):
-        m.get_client()
+    m._database = None
+    with pytest.raises(RuntimeError, match="Missing DATABASE_URL"):
+        m.get_database()
     importlib.reload(cfg)  # restore real config state for other tests

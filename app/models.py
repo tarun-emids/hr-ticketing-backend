@@ -1,7 +1,7 @@
 """Request models (DTOs) + response serializers.
 
 Request DTOs and the row serializers live here — the contract between HTTP
-and the service layer. Serializers convert snake_case Supabase rows into the
+and the service layer. Serializers convert snake_case PostgreSQL rows into the
 exact camelCase shape the frontend's `src/data/store.js` works with, so the
 API layer can be dropped in without touching UI code.
 
@@ -116,7 +116,7 @@ class LogIngestRequest(CamelModel):
 
 
 # ---------------------------------------------------------------------------
-# Serializers (Supabase row -> API/frontend shape)
+# Serializers (PostgreSQL row -> API/frontend shape)
 # ---------------------------------------------------------------------------
 
 

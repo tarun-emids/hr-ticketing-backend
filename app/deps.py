@@ -1,10 +1,10 @@
 """Dependency-injection wiring (FastAPI Depends graph).
 
-    controller --Depends--> service --Depends--> repository --Depends--> Supabase client
+    controller --Depends--> service --Depends--> repository --Depends--> PostgreSQL
 
-The client is resolved here via `app.config.get_client()` at call time
+The pool is resolved here via `app.config.get_database()` at call time
 (module attribute, not a from-import binding): tests monkeypatch
-`app.config.get_client` to inject the offline FakeSupabase for every request
+`app.config.get_database` to inject the offline database for every request
 and every repository in one place.
 """
 
@@ -24,32 +24,32 @@ from app.services.ticket_service import TicketService
 from app.services.user_service import UserService
 
 
-def get_supabase():
-    """Supabase client for this unit of work (fresh handle per request)."""
-    return app_config.get_client()
+def get_database():
+    """Shared PostgreSQL connection pool."""
+    return app_config.get_database()
 
 
 # -- repositories ---------------------------------------------------------
 
 
-def get_user_repo(client=Depends(get_supabase)) -> UserRepository:
-    return UserRepository(client)
+def get_user_repo(database=Depends(get_database)) -> UserRepository:
+    return UserRepository(database)
 
 
-def get_ticket_repo(client=Depends(get_supabase)) -> TicketRepository:
-    return TicketRepository(client)
+def get_ticket_repo(database=Depends(get_database)) -> TicketRepository:
+    return TicketRepository(database)
 
 
-def get_draft_repo(client=Depends(get_supabase)) -> DraftRepository:
-    return DraftRepository(client)
+def get_draft_repo(database=Depends(get_database)) -> DraftRepository:
+    return DraftRepository(database)
 
 
-def get_notification_repo(client=Depends(get_supabase)) -> NotificationRepository:
-    return NotificationRepository(client)
+def get_notification_repo(database=Depends(get_database)) -> NotificationRepository:
+    return NotificationRepository(database)
 
 
-def get_storage_repo(client=Depends(get_supabase)) -> AttachmentStorageRepository:
-    return AttachmentStorageRepository(client)
+def get_storage_repo(database=Depends(get_database)) -> AttachmentStorageRepository:
+    return AttachmentStorageRepository(database)
 
 
 # -- services ---------------------------------------------------------------
@@ -91,5 +91,5 @@ def get_draft_service(
 
 
 def get_log_ingest_service() -> LogIngestService:
-    """Frontend log sink (no Supabase — writes through the logging system)."""
+    """Frontend log sink (writes through the logging system)."""
     return LogIngestService()

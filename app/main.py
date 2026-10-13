@@ -3,7 +3,7 @@
 Layering:
     app.controllers  (routers: parse request -> service call)
     app.services     (business rules; repositories injected)
-    app.repositories (the only layer that touches Supabase)
+    app.repositories (the only layer that touches PostgreSQL)
     app.deps         (the DI graph wiring it together)
 
 Observability (all opt-out via env — see app/observability.py and README §11):
@@ -50,12 +50,12 @@ log = get_logger()
 
 def _notification_service_for_jobs() -> NotificationService:
     """Background-scheduler instance, built directly (not via request-scoped
-    Depends) from the same config singleton the DI graph uses."""
-    client = app_config.get_client()
+    Depends) from the same PostgreSQL pool the DI graph uses."""
+    database = app_config.get_database()
     return NotificationService(
-        NotificationRepository(client),
-        UserRepository(client),
-        TicketRepository(client),
+        NotificationRepository(database),
+        UserRepository(database),
+        TicketRepository(database),
     )
 
 
@@ -63,7 +63,7 @@ def _notification_service_for_jobs() -> NotificationService:
 async def lifespan(_app: FastAPI):
     """Background jobs: first-response SLA sweep + notification retention.
     Runs immediately on boot, then every SLA_SWEEP_INTERVAL_SECONDS. Each job
-    swallows its own errors, so a Supabase outage only pauses them."""
+    swallows its own errors, so a PostgreSQL outage only pauses them."""
     svc = _notification_service_for_jobs()
 
     async def _jobs():
@@ -79,11 +79,12 @@ async def lifespan(_app: FastAPI):
         jobs.cancel()
         with suppress(asyncio.CancelledError):
             await jobs
+        app_config.close_database()
 
 
 app = FastAPI(
     title="HR Desk API",
-    description="Ticketing backend for the Emids HR Desk frontend (Supabase Postgres + Storage).",
+    description="Ticketing backend for the Emids HR Desk frontend (PostgreSQL).",
     version="0.1.3",
     lifespan=lifespan,
     # FastAPI's native telemetry would auto-add OTLP exporters from
@@ -121,17 +122,17 @@ app.include_router(logs.router, prefix="/api")
 
 @app.get("/health")
 def health():
-    """Liveness only — does not touch Supabase."""
+    """Liveness only — does not touch PostgreSQL."""
     return {"ok": True}
 
 
 @app.get("/health/deps")
 def health_deps():
-    """Read-only readiness view: circuit-breaker state per Supabase surface.
+    """Read-only readiness view: circuit-breaker state for PostgreSQL.
 
     Makes breaker transitions observable with curl during an outage demo or
     incident (state flips closed -> open; failures counts; secondsUntilProbe
-    while open). Touches no Supabase call, so it answers even mid-outage.
+    while open).     Touches no PostgreSQL call, so it answers even mid-outage.
     """
     return {"breakers": breakers_snapshot()}
 

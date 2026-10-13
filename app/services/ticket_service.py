@@ -20,7 +20,6 @@ from typing import Optional
 
 from fastapi import HTTPException
 
-from app.config import SIGNED_URL_TTL
 from app.models import ticket_out
 from app.repositories.attachment_storage import AttachmentStorageRepository
 from app.repositories.ticket_repository import TicketRepository
@@ -347,7 +346,7 @@ class TicketService:
         path = f"{row['ref']}/{uuidlib.uuid4().hex}{ext}"
         self._storage.upload(path, data, content_type)
 
-        return self._patch_and_return(
+        updated = self._patch_and_return(
             tid,
             {
                 "attachment_path": path,
@@ -355,6 +354,9 @@ class TicketService:
                 "attachment_size": len(data),
             },
         )
+        if row.get("attachment_path"):
+            self._storage.remove(row["attachment_path"])
+        return updated
 
     def attachment_url(self, tid: str, ttl: int) -> dict:
         """GET /tickets/{id}/attachment — short-lived signed URL for the file."""
@@ -367,5 +369,5 @@ class TicketService:
             "name": row.get("attachment_name"),
             "size": row.get("attachment_size"),
             "url": url,
-            "expiresInSeconds": SIGNED_URL_TTL,
+            "expiresInSeconds": self._storage.clamp_ttl(ttl),
         }
