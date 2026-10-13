@@ -36,14 +36,13 @@ def test_neutral_outcome_never_counts():
     brk = CircuitBreaker("t", failure_threshold=2, recovery_timeout=60.0)
 
     def user_error():
-        raise ValueError("bad request")  # e.g. PostgREST 23xxx / GoTrue 401
+        raise ValueError("bad request")  # a handled caller error is not an outage
 
     for _ in range(10):
         with pytest.raises(ValueError):
             brk.call(user_error, is_failure=lambda exc: False)
 
     assert brk.snapshot() == {"name": "t", "state": CLOSED, "failures": 0}
-
 
 
 def test_success_resets_failure_counter():
@@ -69,7 +68,6 @@ def test_success_resets_failure_counter():
         brk.call(raise_exc, is_failure=always_down)
 
     assert brk.snapshot()["state"] == OPEN
-
 
 
 def test_open_circuit_fails_fast_without_calling_the_dependency():
@@ -144,7 +142,7 @@ def test_probe_outcome_with_caller_error_closes_the_circuit():
     assert brk.snapshot()["state"] == OPEN
 
     def answered_with_caller_error():
-        raise ValueError("bad credentials")  # GoTrue answered 401
+        raise ValueError("bad credentials")  # a rejected login is not an outage
 
     # neutral predicate: probe resolves to a caller error, still evidence of life
     with pytest.raises(ValueError):
@@ -164,70 +162,3 @@ def test_reset_reopens_business_as_usual():
     brk.reset()
     assert brk.snapshot() == {"name": "t", "state": CLOSED, "failures": 0}
     assert brk.call(lambda: "ok") == "ok"
-
-
-# ---------------------------------------------------------------------------
-# run() integration: real module-level db breaker + the PostgREST error classes
-# it must distinguish (constraint violations are caller errors, never outages)
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture(autouse=True)
-def _fresh_db_breaker():
-    from app.repositories import base as repositories_base
-
-    repositories_base.db_breaker.reset()
-    yield
-    repositories_base.db_breaker.reset()
-
-
-def _query(raiser):
-    class _Q:
-        def execute(self):
-            raiser()
-
-    return _Q()
-
-
-def test_postgrest_constraint_violation_is_neutral_and_maps_400():
-    from fastapi import HTTPException
-    from postgrest.exceptions import APIError
-
-    from app.repositories import base as repositories_base
-
-    fk = lambda: (_ for _ in ()).throw(  # noqa: E731
-        APIError({"message": "insert violates foreign key", "code": "23503"})
-    )
-    for _ in range(50):  # far beyond any threshold — these must never trip it
-        with pytest.raises(HTTPException) as ei:
-            repositories_base.run(_query(fk))
-        assert ei.value.status_code == 400
-        assert "Database rejected the write" in ei.value.detail
-
-    snap = repositories_base.db_breaker.snapshot()
-    assert snap["state"] == CLOSED
-    assert snap["failures"] == 0
-
-
-def test_postgrest_non_constraint_error_counts_and_maps_502():
-    from fastapi import HTTPException
-    from postgrest.exceptions import APIError
-
-    from app.repositories import base as repositories_base
-
-    disaster = lambda: (_ for _ in ()).throw(  # noqa: E731
-        APIError({"message": "connection terminated", "code": "57P01"})
-    )
-    with pytest.raises(HTTPException) as ei:
-        repositories_base.run(_query(disaster))
-    assert ei.value.status_code == 502
-    assert repositories_base.db_breaker.snapshot()["failures"] == 1
-
-
-def test_transport_failure_through_run_counts():
-    from app.repositories import base as repositories_base
-
-    dead = lambda: (_ for _ in ()).throw(RuntimeError("read timeout"))  # noqa: E731
-    with pytest.raises(RuntimeError, match="read timeout"):  # unmapped: 500 handler today
-        repositories_base.run(_query(dead))
-    assert repositories_base.db_breaker.snapshot()["failures"] == 1

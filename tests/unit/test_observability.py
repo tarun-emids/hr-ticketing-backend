@@ -12,6 +12,7 @@ import json
 import logging
 import re
 import sys
+from contextlib import contextmanager
 from types import SimpleNamespace
 
 import pytest
@@ -23,7 +24,7 @@ from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-from postgrest.exceptions import APIError
+from psycopg.errors import ForeignKeyViolation
 
 from app import config as app_config
 from app.observability import (
@@ -148,30 +149,31 @@ def test_log_records_carry_trace_ids_inside_a_span():
 
 
 class _Res:
-    data = [{"ok": True}]
+    pass
 
 
 class FakeSelectBuilder:
-    def execute(self):
-        return _Res()
+    @contextmanager
+    def connection(self):
+        yield self
 
 
 class _FailingBuilder(FakeSelectBuilder):
-    def execute(self):
-        raise APIError({"message": "fk violated", "code": "23503"})
+    def execute(self, _sql, _params):
+        raise ForeignKeyViolation("fk violated")
 
 
 def test_db_span_creates_recording_span_with_attributes():
-    with db_span("db.postgrest.tickets.select", {"db.operation": "select"}) as span:
+    with db_span("db.postgresql.tickets.select", {"db.operation": "select"}) as span:
         assert span is not None
         assert span.is_recording()
-        assert span.name == "db.postgrest.tickets.select"
+        assert span.name == "db.postgresql.tickets.select"
 
 
-def test_run_maps_postgrest_errors_unchanged():
+def test_run_maps_postgresql_errors():
     with pytest.raises(Exception) as err:
-        run(_FailingBuilder())
-    assert "Database rejected the write: fk violated" in str(err.value)
+        run(_FailingBuilder(), "INSERT INTO users (id) VALUES (%s)", ("id",), table="users")
+    assert "Database rejected the write" in str(err.value)
 
 
 def test_background_span_returns_recording_span():

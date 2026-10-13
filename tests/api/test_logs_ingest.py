@@ -1,6 +1,6 @@
 """Frontend log ingestion (POST /api/logs/ingest) — corr. with backend logs.
 
-Runs hermetically: the shared conftest fixture wires FakeSupabase; ingestion
+Runs hermetically: the shared conftest fixture wires the offline database; ingestion
 doesn't touch Supabase at all — events go through the standard logging
 chain like every backend record (asserted via caplog, LOG_TO_FILE=false).
 """

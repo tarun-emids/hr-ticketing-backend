@@ -1,29 +1,21 @@
-"""Circuit breakers for the three Supabase network surfaces.
+"""Circuit breaker for the shared PostgreSQL dependency.
 
-Supabase is this app's only external dependency, reached over the network in
-three independent places:
+Database, login, and attachment operations all use the same PostgreSQL
+connection pool, so a single breaker protects them together.
 
-    db_breaker      PostgREST — every repository call funnels through
-                    run()/rows_of()/first_of() in app/repositories/base.py
-    auth_breaker    GoTrue password grant — app/services/auth_service._grant()
-    storage_breaker Storage bucket ops — app/repositories/attachment_storage.py
-
-When a surface is failing (outage, overload, stalled network), the breaker
+When PostgreSQL is failing (outage, overload, stalled network), the breaker
 flips to OPEN and callers get an immediate 503 instead of paying a full
 network round trip — and the struggling dependency stops being hammered,
 so it can recover. One half-open probe is admitted after the cooldown;
 if it succeeds the circuit closes again.
 
-WHY hand-rolled instead of a library: the failure classification is not
-exception-type-based. PostgREST FK violations (code 23xxx) and GoTrue
-401/422 responses mean the DEPENDENCY IS HEALTHY — the caller is wrong — and
-must not trip the breaker. That "neutral outcome" concept needs a predicate
-call sites control per call (`is_failure=`), which is exactly one parameter
-here. Deps: stdlib only.
+WHY hand-rolled instead of a library: constraint violations mean PostgreSQL
+answered and must not trip the breaker. That "neutral outcome" concept needs
+a predicate call sites control per call (`is_failure=`). Deps: stdlib only.
 
 The module deliberately has no FastAPI import: `CircuitOpenError` is
 translated to HTTPException(503) NEXT TO the raise site, where the
-per-surface detail message lives (the generic exception handler in
+database detail message lives (the generic exception handler in
 app/main.py must never see it).
 
 Env knobs (read in app/config.py): CIRCUIT_BREAKER_FAILURE_THRESHOLD
@@ -193,18 +185,8 @@ db_breaker = CircuitBreaker(
     failure_threshold=app_config.BREAKER_FAILURE_THRESHOLD,
     recovery_timeout=app_config.BREAKER_RECOVERY_SECONDS,
 )
-auth_breaker = CircuitBreaker(
-    "auth",
-    failure_threshold=app_config.BREAKER_FAILURE_THRESHOLD,
-    recovery_timeout=app_config.BREAKER_RECOVERY_SECONDS,
-)
-storage_breaker = CircuitBreaker(
-    "storage",
-    failure_threshold=app_config.BREAKER_FAILURE_THRESHOLD,
-    recovery_timeout=app_config.BREAKER_RECOVERY_SECONDS,
-)
 
 
 def breakers_snapshot() -> dict:
-    """{name: snapshot} for the GET /health/deps endpoint, in a stable order."""
-    return {b.name: b.snapshot() for b in (db_breaker, auth_breaker, storage_breaker)}
+    """The named breaker state returned by GET /health/deps."""
+    return {db_breaker.name: db_breaker.snapshot()}

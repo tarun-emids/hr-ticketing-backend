@@ -1,3 +1,5 @@
+"""Live PostgreSQL integration tests."""
+
 import uuid as uuidlib
 
 import pytest

@@ -1,7 +1,7 @@
 """Employee ticket drafts: CRUD, submit, attachments. Rules live in
 DraftService (ownership scoping, submit validation, attachment swap)."""
 
-from fastapi import APIRouter, Depends, UploadFile
+from fastapi import APIRouter, Depends, Request, UploadFile
 
 from app.config import SIGNED_URL_TTL
 from app.deps import get_draft_service
@@ -90,7 +90,10 @@ def delete_draft_attachment(
 def draft_attachment_url(
     draft_id: str,
     employeeId: str,
+    request: Request,
     ttl: int = SIGNED_URL_TTL,
     svc: DraftService = Depends(get_draft_service),
 ):
-    return svc.attachment_url(draft_id, employeeId, ttl)
+    result = svc.attachment_url(draft_id, employeeId, ttl)
+    result["url"] = f"{str(request.base_url).rstrip('/')}{result['url']}"
+    return result
