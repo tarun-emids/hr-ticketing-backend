@@ -14,7 +14,9 @@ Design (carried from the original full-stack implementation, evolved):
                   provisioned — future-proof mapping)
     Unknown or missing roles see nothing.
 - Out-of-pool documents return 403 (they exist, but are not for you);
-  unknown slugs return 404. Same gate in front of metadata and file URLs.
+  unknown slugs return 404. Same gate in front of metadata and file content:
+  unlike the token-signed approach, the gate runs on EVERY download request,
+  so a link can never outlive the permission check that minted it.
 - Search: tokenise the query, score every visible document over weighted
   fields (title 10 > category 6 > keywords 4 > summary 2 > body 1). A token
   must hit a QUALIFIER field (the four above the body blob) to select the
@@ -33,10 +35,18 @@ from fastapi import HTTPException
 from app.models import kb_doc_out
 from app.repositories.base import UUID_RE
 from app.repositories.kb_repository import KbRepository
-from app.repositories.kb_storage import KbStorageRepository, safe_download_name
 from app.repositories.user_repository import UserRepository
 
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,80}$")
+
+# Characters a Content-Disposition filename should never carry
+_UNSAFE_FILENAME = re.compile(r'[\\/:*?"<>|\r\n\t]+')
+
+
+def safe_download_name(title: Optional[str]) -> str:
+    """'Sick Leave Policy' -> 'Sick Leave Policy.pdf', path/quote chars out."""
+    cleaned = _UNSAFE_FILENAME.sub(" ", (title or "document")).strip()
+    return f"{cleaned or 'document'}.pdf"
 
 # role -> the document pools it may read
 ROLE_POOLS: dict[str, tuple[str, ...]] = {
@@ -142,11 +152,9 @@ class KbService:
         self,
         kb: KbRepository,
         users: UserRepository,
-        pdfs: KbStorageRepository,
     ):
         self._kb = kb
         self._users = users
-        self._pdfs = pdfs
 
     # -- viewer + gates ------------------------------------------------------
 
@@ -199,30 +207,24 @@ class KbService:
         viewer = self._viewer(viewer_id)
         return kb_doc_out(self._doc_or_gate(slug, viewer))
 
-    def file_url(
+    def file_get(
         self,
         slug: str,
         viewer_id: Optional[str],
-        ttl: int,
         download: bool = False,
-    ) -> dict:
-        """GET /kb/{slug}/file — signed PDF URL behind the same visibility
-        gate. download=True returns an attachment-disposition URL with a
-        'Title.pdf' save-as suggestion; the default renders inline."""
+    ) -> tuple[bytes, str]:
+        """GET /kb/{slug}/file — the PDF bytes themselves, behind the same
+        visibility gate (the gate re-checks the viewer on every fetch, so an
+        old link that someone kept cannot outlive a permission change).
+        download=True returns an attachment filename suggestion; the default
+        renders inline."""
         viewer = self._viewer(viewer_id)
         row = self._doc_or_gate(slug, viewer)
-        url = self._pdfs.signed_pdf_url(
-            row["file_path"],
-            ttl,
-            download=download,
-            download_name=safe_download_name(row.get("title")),
-        )
-        return {
-            "slug": row["slug"],
-            "title": row.get("title"),
-            "fileSize": row.get("file_size"),
-            "pages": row.get("page_count"),
-            "url": url,
-            "expiresInSeconds": KbStorageRepository.clamp_ttl(ttl),
-            "download": bool(download),
-        }
+        data = self._kb.get_content(slug)
+        if data is None:
+            # Seeded document whose PDF bytes were never loaded (or removed).
+            raise HTTPException(
+                status_code=502,
+                detail="Document content could not be loaded — ask HR to re-seed it.",
+            )
+        return {"data": data, "filename": safe_download_name(row.get("title"))}

@@ -2,11 +2,12 @@
 
 The controller validates only what is cheapest at the edge (query param
 shape); everything content-sensitive — viewer existence, role pools,
-403/404 gates, signing — lives in the service.
+403/404 gates — lives in the service. The file endpoint streams the PDF
+straight from PostgreSQL behind the same gate, so the browser gets an
+always-fresh permission check instead of a long-signed URL.
 """
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Response
 
-from app.config import SIGNED_URL_TTL
 from app.deps import get_kb_service
 from app.services.kb_service import KbService
 
@@ -39,14 +40,24 @@ def get_document(
     return svc.get_document(slug, viewerId)
 
 
-@router.get("/{slug}/file")
-def file_url(
+@router.get("/{slug}/file", name="kb_document_file")
+def document_file(
     slug: str,
     viewerId: str,
-    ttl: int = SIGNED_URL_TTL,
     download: bool = False,
     svc: KbService = Depends(get_kb_service),
 ):
-    """GET /kb/{slug}/file — signed PDF URL. download=true returns an
-    attachment link that proposes the policy title as the save-as name."""
-    return svc.file_url(slug, viewerId, ttl, download=download)
+    """GET /kb/{slug}/file — stream the PDF behind the visibility gate.
+    download=true marks the response as an attachment whose save dialog
+    proposes the policy title; the default renders inline (iframe / new tab).
+    """
+    result = svc.file_get(slug, viewerId, download=download)
+    disposition = "attachment" if download else "inline"
+    return Response(
+        content=result["data"],
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'{disposition}; filename="{result["filename"]}"',
+            "Cache-Control": "no-store",
+        },
+    )

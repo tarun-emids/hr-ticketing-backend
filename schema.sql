@@ -128,3 +128,44 @@ INSERT INTO users (name, email, role) VALUES
   ('Ben Osei',     'ben.hr@acme.com',    'agent'),
   ('Ruth Meyer',   'ruth.hr@acme.com',   'agent')
 ON CONFLICT (email) DO NOTHING;
+
+-- ------------------------------------------------------------
+-- Knowledge base policy documents
+--   Metadata and the rendered PDF bytes (`data`) both live here: the
+--   API streams the file straight from this table behind the same
+--   visibility gate. `audience`:  'employee' -> employee-facing policies;
+--   'hr' -> HR-only SOPs (agents see both pools). `search_text` is the
+--   lowercased title+category+summary+keywords+body blob scored by
+--   app/services/kb_service.py. Rows are upserted by
+--   scripts/seed_knowledge_base.py (pre-rendered PDFs in
+--   scripts/knowledge_base_pdfs/).
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS kb_documents (
+  id             uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  slug           text NOT NULL UNIQUE,
+  ref            text,
+  title          text NOT NULL,
+  category       text NOT NULL DEFAULT 'General',
+  audience       text NOT NULL CHECK (audience IN ('employee', 'hr')),
+  summary        text NOT NULL DEFAULT '',
+  keywords       text NOT NULL DEFAULT '',
+  search_text    text NOT NULL DEFAULT '',
+  data           bytea NOT NULL,
+  content_type   text NOT NULL DEFAULT 'application/pdf',
+  file_size      bigint,
+  page_count     int,
+  version        text NOT NULL DEFAULT 'v1.0',
+  effective_date date,
+  created_at     timestamptz NOT NULL DEFAULT now(),
+  updated_at     timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_kb_documents_audience
+  ON kb_documents (audience);
+CREATE INDEX IF NOT EXISTS idx_kb_documents_updated
+  ON kb_documents (updated_at DESC);
+
+DROP TRIGGER IF EXISTS trg_kb_documents_updated ON kb_documents;
+CREATE TRIGGER trg_kb_documents_updated
+  BEFORE UPDATE ON kb_documents
+  FOR EACH ROW EXECUTE FUNCTION set_updated_at();

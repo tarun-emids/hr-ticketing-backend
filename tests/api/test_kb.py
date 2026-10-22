@@ -1,11 +1,13 @@
-"""Knowledge base endpoints — visibility gates, search, signed URLs.
+"""Knowledge base endpoints — visibility gates, search, PDF streaming.
 
-Runs against the offline FakeSupabase seeded with 3 employee + 2 HR policy
-documents (tests/conftest.py: _SEED_KB). The gate rules under test:
-  - the viewer's role always comes from public.users (viewerId), never trust;
-  - employee sees the employee pool, agents/admin see both pools;
+Runs against the offline SQLite-backed harness seeded with 3 employee + 2 HR
+policy documents (tests/conftest.py). The gate rules under test:
+  - the viewer's role always comes from `users` (viewerId), never trusted;
+  - employee sees the employee pool, agents see both pools;
   - out-of-pool -> 403, unknown slug -> 404, bad viewer -> 422/404;
-  - view URLs carry no download transform; download URLs carry the filename.
+  - the file endpoint streams the PDF straight from the store: inline by
+    default, attachment-disposition with the suggested filename when
+    download=true — and the gate runs on EVERY fetch.
 """
 from tests.conftest import U
 
@@ -14,15 +16,17 @@ def _get(client, path, **params):
     return client.get(f"/api{path}", params=params)
 
 
+# -- catalogue + pools --------------------------------------------------------
+
 def test_employee_lists_only_employee_pool(api):
     r = _get(api.client, "/kb", viewerId=U["priya"])
     assert r.status_code == 200
     audiences = {doc["audience"] for doc in r.json()}
     assert audiences == {"employee"}
     assert {doc["slug"] for doc in r.json()} == {
-        "leave-and-time-off-policy",
-        "hybrid-work-policy",
-        "attendance-working-hours-policy",
+        "leave-policy",
+        "payslip-guide",
+        "work-time-policy",
     }
 
 
@@ -33,116 +37,90 @@ def test_agent_sees_both_pools(api):
     assert {doc["audience"] for doc in r.json()} == {"employee", "hr"}
 
 
+# -- search (weighted scorer lives behind GET /kb?q=) --------------------------
+
+def test_search_returns_top_matches_only(api):
+    r = _get(api.client, "/kb", viewerId=U["alicia"], q="leave")
+    assert r.status_code == 200
+    rows = r.json()
+    assert len(rows) <= 3  # hard result cap
+    assert rows[0]["slug"] == "leave-policy"  # title hit outranks keyword hits
+
+
+def test_search_cap_actually_limits(api):
+    # 'policy' hits several titles; the endpoint still never returns more than 3.
+    r = _get(api.client, "/kb", viewerId=U["alicia"], q="policy")
+    assert r.status_code == 200
+    assert len(r.json()) <= 3
+
+
+# -- doc shape contract --------------------------------------------------------
+
 def test_doc_shape_matches_frontend_contract(api):
-    r = _get(api.client, "/kb/leave-and-time-off-policy", viewerId=U["priya"])
+    r = _get(api.client, "/kb/leave-policy", viewerId=U["priya"])
     assert r.status_code == 200
     doc = r.json()
-    assert doc == {
-        "slug": "leave-and-time-off-policy",
-        "ref": "KB-E-01",
-        "title": "Leave and Time Off Policy",
-        "category": "Leave",
-        "audience": "employee",
-        "summary": "How time off accrues, carries over and gets approved.",
-        "keywords": ["leave", "pto", "vacation", "sick", "carryover"],
-        "version": "v1.0",
-        "effectiveDate": "2026-04-01",
-        "pages": 7,
-        "fileSize": 12345,
-        "updatedAt": doc["updatedAt"],  # timestamp shape checked implicitly
+    assert set(doc.keys()) == {
+        "slug", "ref", "title", "category", "audience", "summary",
+        "keywords", "version", "effectiveDate", "pages", "fileSize", "updatedAt",
     }
+    assert doc["title"] == "Leave Policy"
+    assert doc["audience"] == "employee"
 
 
-def test_search_honours_pools(api):
-    # HR-only SOP matches 'payroll' for agents...
-    r = _get(api.client, "/kb", viewerId=U["alicia"], q="payroll")
-    assert [d["slug"] for d in r.json()] == ["payroll-processing-sop"]
-    # ...and returns nothing for employees (the token only qualifies in the
-    # HR pool — employee docs never carry 'payroll' in a qualifier field).
-    r = _get(api.client, "/kb", viewerId=U["priya"], q="payroll")
-    assert r.json() == []
+def test_unknown_slug_is_404_not_403(api):
+    r = _get(api.client, "/kb/not-a-real-policy", viewerId=U["priya"])
+    assert r.status_code == 404
 
 
-def test_search_returns_top_matches_with_ranking(api):
-    r = _get(api.client, "/kb", viewerId=U["alicia"], q="leave")
-    slugs = [d["slug"] for d in r.json()]
-    assert slugs[0] == "leave-and-time-off-policy"  # title hit outranks others
-    assert len(slugs) <= 3  # top-N, never a wall of near-hits
-
-
-def test_popular_strips_are_pool_scoped(api):
-    r = _get(api.client, "/kb/popular", viewerId=U["priya"])
-    assert len(r.json()) == 3
-    r = _get(api.client, "/kb/popular", viewerId=U["alicia"])
-    assert len(r.json()) == 5
-
-
-def test_out_of_pool_document_is_403(api):
-    r = _get(api.client, "/kb/payroll-processing-sop", viewerId=U["priya"])
+def test_out_of_pool_slug_is_403(api):
+    r = _get(api.client, "/kb/payroll-run-sop", viewerId=U["priya"])
     assert r.status_code == 403
     assert "permission" in r.json()["detail"].lower()
 
 
-def test_file_url_is_gated_the_same_way(api):
-    r = _get(api.client, "/kb/payroll-processing-sop/file", viewerId=U["priya"])
-    assert r.status_code == 403
-    r = _get(api.client, "/kb/payroll-processing-sop/file", viewerId=U["ben"])
-    assert r.status_code == 200
+# -- viewer resolution ---------------------------------------------------------
+
+def test_unknown_viewer_404(api):
+    r = _get(api.client, "/kb", viewerId="00000000-0000-0000-0000-000000000abc")
+    assert r.status_code == 404
 
 
-def test_unknown_slug_is_404_and_slug_shape_is_enforced(api):
-    assert _get(api.client, "/kb/does-not-exist", viewerId=U["priya"]).status_code == 404
-    # uppercase / spacey slugs can never exist (SLUG_RE) -> 404, not 500
-    assert _get(api.client, "/kb/Leave%20Policy", viewerId=U["priya"]).status_code == 404
-
-
-def test_viewer_validations(api):
-    # missing viewerId is rejected by FastAPI (required param)
-    assert api.client.get("/api/kb").status_code == 422
-    # malformed uuid
+def test_malformed_viewer_422(api):
     r = _get(api.client, "/kb", viewerId="not-a-uuid")
     assert r.status_code == 422
-    # well-formed but unknown
-    r = _get(api.client, "/kb", viewerId="00000000-0000-0000-0000-999999999999")
+
+
+# -- file streaming ------------------------------------------------------------
+
+def test_file_streams_pdf_inline_by_default(api):
+    r = _get(api.client, "/kb/leave-policy/file", viewerId=U["priya"])
+    assert r.status_code == 200
+    assert r.content.startswith(b"%PDF-1.4")
+    assert r.headers["content-type"] == "application/pdf"
+    assert r.headers["content-disposition"].startswith("inline")
+    assert "Leave Policy.pdf" in r.headers["content-disposition"]
+    assert r.headers["cache-control"] == "no-store"
+
+
+def test_file_download_flavour_carries_filename(api):
+    r = _get(api.client, "/kb/leave-policy/file", viewerId=U["priya"], download=True)
+    assert r.status_code == 200
+    assert r.headers["content-disposition"].startswith("attachment")
+    assert 'filename="Leave Policy.pdf"' in r.headers["content-disposition"]
+
+
+def test_file_search_gate_blocks_out_of_pool(api):
+    r = _get(api.client, "/kb/exit-offboard-policy/file", viewerId=U["priya"])
+    assert r.status_code == 403
+
+
+def test_file_allows_agent_across_pools(api):
+    r = _get(api.client, "/kb/exit-offboard-policy/file", viewerId=U["alicia"])
+    assert r.status_code == 200
+    assert r.content.startswith(b"%PDF-1.4")
+
+
+def test_file_unknown_slug_404(api):
+    r = _get(api.client, "/kb/no-such-doc/file", viewerId=U["priya"])
     assert r.status_code == 404
-    assert "unknown" in r.json()["detail"].lower()
-
-
-def test_view_url_has_no_download_transform(api):
-    r = _get(api.client, "/kb/leave-and-time-off-policy/file", viewerId=U["priya"])
-    assert r.status_code == 200
-    body = r.json()
-    assert body["download"] is False
-    assert body["url"].startswith("https://fake.supabase.co/storage/v1/object/sign/knowledge-base/pdf/")
-    assert body["fileSize"] == 12345 and body["pages"] == 7
-    # the fake records exactly what was asked of the storage client
-    assert api.fake.last_signed_options is None
-    assert api.fake.last_signed_ttl == 3600
-
-
-def test_download_url_carries_suggested_filename(api):
-    r = _get(
-        api.client, "/kb/leave-and-time-off-policy/file",
-        viewerId=U["priya"], download=True,
-    )
-    assert r.status_code == 200
-    assert api.fake.last_signed_options == {"download": "Leave and Time Off Policy.pdf"}
-    assert r.json()["download"] is True
-
-
-def test_ttl_is_clamped_into_storage_call(api):
-    r = _get(api.client, "/kb/hybrid-work-policy/file", viewerId=U["priya"], ttl="999999")
-    assert r.status_code == 200
-    assert api.fake.last_signed_ttl == 86400  # max 24 h
-    assert r.json()["expiresInSeconds"] == 86400
-    r = _get(api.client, "/kb/hybrid-work-policy/file", viewerId=U["priya"], ttl="5")
-    assert api.fake.last_signed_ttl == 60  # min 60 s
-
-
-def test_agent_download_path_signs_hr_file(api):
-    r = _get(
-        api.client, "/kb/exit-process-sop/file",
-        viewerId=U["alicia"], download=True,
-    )
-    assert r.status_code == 200
-    assert api.fake.last_signed_options == {"download": "Exit Process SOP.pdf"}

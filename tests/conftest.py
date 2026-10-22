@@ -157,6 +157,16 @@ class SQLitePool:
               path TEXT PRIMARY KEY, data BLOB NOT NULL, content_type TEXT NOT NULL,
               created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
+            CREATE TABLE kb_documents (
+              id TEXT PRIMARY KEY, slug TEXT NOT NULL UNIQUE, ref TEXT,
+              title TEXT NOT NULL, category TEXT NOT NULL DEFAULT 'General',
+              audience TEXT NOT NULL, summary TEXT NOT NULL DEFAULT '',
+              keywords TEXT NOT NULL DEFAULT '', search_text TEXT NOT NULL DEFAULT '',
+              data BLOB NOT NULL, content_type TEXT NOT NULL DEFAULT 'application/pdf',
+              file_size INTEGER, page_count INTEGER, version TEXT NOT NULL DEFAULT 'v1.0',
+              effective_date TEXT, created_at TEXT,
+              updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+00:00', 'now'))
+            );
             CREATE TRIGGER tickets_updated AFTER UPDATE ON tickets
               WHEN NEW.updated_at = OLD.updated_at BEGIN
                 UPDATE tickets SET updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00', 'now')
@@ -291,6 +301,44 @@ class SQLitePool:
                 clock(),
             ),
         )
+        for slug, ref, title, category, audience, keywords in [
+            ("leave-policy", "KB-E-01", "Leave Policy", "Leave", "employee",
+             "pto, carryover, vacation"),
+            ("payslip-guide", "KB-E-02", "Payslip Reading Guide", "Payroll", "employee",
+             "payslip, salary, allowance"),
+            ("work-time-policy", "KB-E-03", "Working Time Policy", "Workplace", "employee",
+             "working time, shifts, overtime"),
+            ("exit-offboard-policy", "KB-HR-01", "Exit Process", "Offboarding", "hr",
+             "exit, clearance, fnf"),
+            ("payroll-run-sop", "KB-HR-02", "Payroll Run SOP", "Payroll", "hr",
+             "payroll, cutoff, run"),
+        ]:
+            now = clock()
+            self._connection.execute(
+                """
+                INSERT INTO kb_documents (
+                  id, slug, ref, title, category, audience, keywords, summary,
+                  search_text, data, file_size, page_count, effective_date, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(uuidlib.uuid4()),
+                    slug,
+                    ref,
+                    title,
+                    category,
+                    audience,
+                    keywords,
+                    f"{title} summary for the knowledge base.",
+                    f"{title} {keywords} summary".lower(),
+                    b"%PDF-1.4 test-fake-pdf-bytes",
+                    len(b"%PDF-1.4 test-fake-pdf-bytes"),
+                    5,
+                    "2026-04-01",
+                    now,
+                    now,
+                ),
+            )
         self._connection.commit()
 
     def close(self):
