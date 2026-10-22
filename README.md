@@ -71,6 +71,26 @@ Use Python 3.14 (the project uses lazy class-body annotations).
 - Liveness: `GET /health` (does not query PostgreSQL)
 - PostgreSQL breaker state: `GET /health/deps`
 
+## Knowledge base documents (PostgreSQL)
+
+Policy PDFs live **inside the `kb_documents` table** (metadata + `data`
+bytea); the `/api/kb/{slug}/file` endpoint streams them to the browser after
+the same viewer/role gate as the metadata endpoints. To load the 30
+pre-rendered documents (data lives in `scripts/knowledge_base_pdfs/`):
+
+```bash
+# schema.sql (run once, above) creates the kb_documents table
+python scripts/seed_knowledge_base.py --dry-run   # plan only
+python scripts/seed_knowledge_base.py             # upsert all 30 by slug
+python scripts/seed_knowledge_base.py --only leave
+```
+
+Re-runs are idempotent (existing slugs are updated in place, new ones
+inserted), so it is safe after any schema or wording change. Remove or
+replace rows by editing `scripts/knowledge_base_pdfs/` + re-running the
+loader. Public per-document metadata (title, audience pools, keywords,
+search blob) comes from `app/kb_seed/`.
+
 ## Moving existing Supabase data
 
 Supabase's relational tables are PostgreSQL tables and can be exported with
