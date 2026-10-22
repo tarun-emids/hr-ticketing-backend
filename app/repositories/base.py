@@ -11,10 +11,13 @@ supabase-py gotchas baked into this module (moved here from the old
   every variant. `.execute().data` or `.single()` chains are used nowhere else.
 - Write `.is_("col", None)` (v2 rejects the string `"null"`) for NULL checks.
 
-Every PostgREST execution goes through `run()`, so that is also where the
-semantic db span lives (no-op when tracing is off): the span name carries
-the operation and, when readable, the table — the actual HTTP hop remains
-visible in the httpx client span nested inside it.
+Every PostgREST execution passes through `run()`, which layers the whole
+outbound-call policy in one place:
+    retry (app/retries.py — reads/idempotent writes replay transient blips)
+      around
+    breaker (app/resilience.py — fails fast while a circuit is open)
+      around
+    span (app/observability.py — db.postgrest.<table>.<op>)
 """
 
 import re
@@ -24,7 +27,8 @@ from fastapi import HTTPException
 from postgrest.exceptions import APIError
 
 from app.observability import db_span
-from app.resilience import CircuitOpenError, db_breaker
+from app.resilience import db_breaker, CircuitOpenError
+from app.retries import classify_mode, retry_call
 
 UUID_RE = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
@@ -79,8 +83,13 @@ def _builder_table(builder) -> Optional[str]:
 
 
 def run(q):
-    """Execute a build behind the db circuit breaker, mapping PostgREST errors
-    to HTTP 4xx/5xx-with-detail.
+
+    """Execute a build under the shared outbound-call policy — the db circuit
+    breaker sits inside the retry loop (each attempt re-contacts the breaker;
+    an OPEN circuit fails fast, no attempt is wasted retrying it) — then map
+    PostgREST errors to HTTP 4xx/5xx-with-detail. The retry mode comes from
+    the terminal builder type (select vs update/delete vs insert) — see
+    app/retries.classify_mode.
     """
     op = _builder_op(q)
     table = _builder_table(q)
@@ -91,7 +100,12 @@ def run(q):
 
     try:
         with db_span(span_name, attrs):
-            return unwrap(db_breaker.call(q.execute, is_failure=_db_failure))
+            return unwrap(
+                retry_call(
+                    lambda: db_breaker.call(q.execute, is_failure=_db_failure),
+                    mode=classify_mode(q),
+                )
+            )
     except CircuitOpenError:
         raise HTTPException(
             status_code=503,

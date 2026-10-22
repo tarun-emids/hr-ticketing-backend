@@ -63,7 +63,10 @@ def test_reupload_replaces_previous_attachment(api):
     t = r.json()
     assert t["attachment"]["name"] == "two.txt"
     assert t["attachment"]["size"] == len(b"second payload")
-    keys = list(api.fake.storage_files.keys())
+    # scope to the attachments bucket — the fake's store also holds the
+    # seeded knowledge-base PDFs (bucket "knowledge-base", paths pdf/...)
+    keys = [k for k in api.fake.storage_files if k[0] == "ticket-attachments"]
+    assert keys  # both uploads landed in the ticket bucket
     assert all(k[1].endswith(".txt") for k in keys)
 
 
