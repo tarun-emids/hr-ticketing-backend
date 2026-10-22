@@ -172,3 +172,52 @@ create index if not exists idx_notifications_ticket
   on public.notifications (ticket_id);
 
 alter table public.notifications enable row level security;
+
+-- ------------------------------------------------------------
+-- 9. Knowledge base policy documents
+--    Metadata rows for the HR policy library; the PDF bytes live in the
+--    private storage bucket created in section 10.
+--    audience:  'employee' -> employee-facing policies
+--               'hr'       -> HR-only SOPs (agents/admin see both pools,
+--                             employees never see 'hr' rows)
+--    search_text: lowercased title+category+summary+keywords+body blob,
+--                 scored by app/services/kb_service.py
+-- ------------------------------------------------------------
+create table if not exists public.kb_documents (
+  id             uuid primary key default gen_random_uuid(),
+  slug           text not null unique,
+  ref            text,                              -- KB-E-01 / KB-HR-01 …
+  title          text not null,
+  category       text not null default 'General',
+  audience       text not null check (audience in ('employee', 'hr')),
+  summary        text not null default '',
+  keywords       text not null default '',          -- comma-separated
+  search_text    text not null default '',          -- flattened lowercase blob for scoring
+  file_path      text not null,                     -- path within the bucket
+  file_size      bigint,
+  page_count     int,
+  version        text not null default 'v1.0',
+  effective_date date,
+  created_at     timestamptz not null default now(),
+  updated_at     timestamptz not null default now()
+);
+
+create index if not exists idx_kb_documents_audience
+  on public.kb_documents (audience);
+create index if not exists idx_kb_documents_updated
+  on public.kb_documents (updated_at desc);
+
+drop trigger if exists trg_kb_documents_updated on public.kb_documents;
+create trigger trg_kb_documents_updated
+  before update on public.kb_documents
+  for each row execute function public.set_updated_at();
+
+alter table public.kb_documents enable row level security;
+
+-- ------------------------------------------------------------
+-- 10. Storage bucket for the policy PDFs (private; the backend signs
+--     short-lived view/download URLs — kb/{slug}/file).
+-- ------------------------------------------------------------
+insert into storage.buckets (id, name, public)
+values ('knowledge-base', 'knowledge-base', false)
+on conflict (id) do nothing;

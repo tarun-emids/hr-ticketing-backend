@@ -11,11 +11,15 @@ supabase-py gotchas baked into this module (moved here from the old
   every variant. `.execute().data` or `.single()` chains are used nowhere else.
 - Write `.is_("col", None)` (v2 rejects the string `"null"`) for NULL checks.
 
-Every PostgREST execution goes through `run()`, so that is also where the
-semantic db span lives (no-op when tracing is off): the span name carries
-the operation and, when readable, the table — the actual HTTP hop remains
-visible in the httpx client span nested inside it.
+Every PostgREST execution passes through `run()`, which layers the whole
+outbound-call policy in one place:
+    retry (app/retries.py — reads/idempotent writes replay transient blips)
+      around
+    breaker (app/resilience.py — fails fast while a circuit is open)
+      around
+    span (app/observability.py — db.postgrest.<table>.<op>)
 """
+
 import re
 from typing import Any, Optional
 
@@ -24,8 +28,11 @@ from postgrest.exceptions import APIError
 
 from app.observability import db_span
 from app.resilience import db_breaker, CircuitOpenError
+from app.retries import classify_mode, retry_call
 
-UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+UUID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
 
 
 def _db_failure(e: BaseException) -> bool:
@@ -77,32 +84,42 @@ def _builder_table(builder) -> Optional[str]:
 
 def run(q):
 
-"""Execute a build behind the db circuit breaker, mapping PostgREST errors
-to HTTP 4xx/5xx-with-detail.
-"""
-op = _builder_op(q)
-table = _builder_table(q)
-span_name = f"db.postgrest.{table}.{op}" if table else f"db.postgrest.{op}"
-attrs = {"db.system": "postgres", "db.operation": op}
-if table:
-    attrs["db.postgrest.table"] = table
+    """Execute a build under the shared outbound-call policy — the db circuit
+    breaker sits inside the retry loop (each attempt re-contacts the breaker;
+    an OPEN circuit fails fast, no attempt is wasted retrying it) — then map
+    PostgREST errors to HTTP 4xx/5xx-with-detail. The retry mode comes from
+    the terminal builder type (select vs update/delete vs insert) — see
+    app/retries.classify_mode.
+    """
+    op = _builder_op(q)
+    table = _builder_table(q)
+    span_name = f"db.postgrest.{table}.{op}" if table else f"db.postgrest.{op}"
+    attrs = {"db.system": "postgres", "db.operation": op}
+    if table:
+        attrs["db.postgrest.table"] = table
 
-try:
-    with db_span(span_name, attrs):
-        return unwrap(db_breaker.call(q.execute, is_failure=_db_failure))
-except CircuitOpenError:
-    raise HTTPException(
-        status_code=503,
-        detail="Database is temporarily unavailable — try again shortly.",
-    )
-except APIError as e:
-    detail = getattr(e, "message", None) or str(e)
-    code = str(getattr(e, "code", "") or "")
-    status = 400 if code.startswith("23") else 502
-    raise HTTPException(
-        status_code=status,
-        detail=f"Database rejected the write: {detail}",
-    )
+    try:
+        with db_span(span_name, attrs):
+            return unwrap(
+                retry_call(
+                    lambda: db_breaker.call(q.execute, is_failure=_db_failure),
+                    mode=classify_mode(q),
+                )
+            )
+    except CircuitOpenError:
+        raise HTTPException(
+            status_code=503,
+            detail="Database is temporarily unavailable — try again shortly.",
+        ) from None
+    except APIError as e:
+        detail = getattr(e, "message", None) or str(e)
+        code = str(getattr(e, "code", "") or "")
+        status = 400 if code.startswith("23") else 502
+        raise HTTPException(
+            status_code=status,
+            detail=f"Database rejected the write: {detail}",
+        ) from e
+
 
 def rows_of(q) -> list:
     data = run(q)

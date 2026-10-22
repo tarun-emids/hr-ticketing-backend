@@ -8,3 +8,5 @@ opentelemetry-sdk>=1.28
 opentelemetry-exporter-otlp-proto-http>=1.28
 opentelemetry-instrumentation-fastapi>=0.49b0
 opentelemetry-instrumentation-httpx>=0.49b0
+httpx>=0.27  # direct import (app/retries.py transport-error classes)
+ruff>=0.17.0

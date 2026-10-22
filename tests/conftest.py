@@ -16,6 +16,7 @@ the write while already-captured references stay at their pre-write values).
 Storage gains remove() so draft attachment replacement flows behave like the
 real storage client (upload → patch → remove previous).
 """
+
 import os
 import uuid as uuidlib
 from datetime import datetime, timedelta, timezone
@@ -100,6 +101,11 @@ class FakeQueryBuilder:
         self._filters.append(("ilike", col, pattern))
         return self
 
+    def in_(self, col, values):
+        # PostgREST vals arrive json-dumped; the fake only ever filters text.
+        self._filters.append(("in", col, [str(v) for v in (values or [])]))
+        return self
+
     def lt(self, col, val):
         self._filters.append(("lt", col, val))
         return self
@@ -124,6 +130,8 @@ class FakeQueryBuilder:
             elif kind == "ilike":
                 pat = val.replace("%", "").lower()
                 rows = [r for r in rows if pat in str(r.get(col) or "").lower()]
+            elif kind == "in":
+                rows = [r for r in rows if str(r.get(col)) in val]
             elif kind == "lt":
                 rows = [r for r in rows if str(r.get(col) or "") < str(val)]
         return rows
@@ -180,7 +188,11 @@ class FakeTable:
     def on_insert(self, payload):
         now = self.supa.clock()
         if self.name == "users":
-            row = {**payload, "id": payload.get("id", _uuid(uuidlib.uuid4().int % 10**12)), "created_at": now}
+            row = {
+                **payload,
+                "id": payload.get("id", _uuid(uuidlib.uuid4().int % 10**12)),
+                "created_at": now,
+            }
             self.rows.append(row)
             return row
         if self.name == "tickets":
@@ -239,6 +251,15 @@ class FakeTable:
             }
             self.rows.append(row)
             return row
+        if self.name == "kb_documents":
+            row = {
+                **payload,
+                "id": str(uuidlib.uuid4()),
+                "created_at": now,
+                "updated_at": now,
+            }
+            self.rows.append(row)
+            return row
         row = {**payload, "id": str(uuidlib.uuid4())}
         self.rows.append(row)
         return row
@@ -264,6 +285,7 @@ class FakeStorage:
 
     def create_signed_url(self, path, ttl):
         self.supa.last_signed_ttl = ttl
+        self.supa.last_signed_options = options
         url = f"https://fake.supabase.co/storage/v1/object/sign/{self.bucket}/{path}?token=x"
         return {"signedURL": url}
 
@@ -287,10 +309,12 @@ class FakeSupabase:
         self.replies = FakeTable(self, "replies")
         self.notifications = FakeTable(self, "notifications")
         self.ticket_drafts = FakeTable(self, "ticket_drafts")
+        self.kb_documents = FakeTable(self, "kb_documents")
         self.storage = FakeStorageClient(self)
         self.storage_files = {}
         self.fail_uploads = False
         self.last_signed_ttl = None
+        self.last_signed_options = None
         self._tick = 0
         self.next_ticket_number = 101
 
@@ -302,8 +326,14 @@ class FakeSupabase:
                 "replies": self.replies,
                 "notifications": self.notifications,
                 "ticket_drafts": self.ticket_drafts,
+                "kb_documents": self.kb_documents,
             }
+
         return tables()[name]
+
+    def seed_kb(self):
+        """3 employee + 2 HR policy documents; used by the /kb tests."""
+        return seed_kb_rows(self)
 
     def clock(self):
         self._tick += 1
@@ -320,55 +350,73 @@ class FakeSupabase:
             ("Ruth Meyer", "ruth.hr@acme.com", "agent", U["ruth"]),
         ]
         for name, email, role, uid in people:
-            self.users.rows.append({
-                "id": uid, "name": name, "email": email, "role": role,
-                "created_at": self.clock(),
-            })
+            self.users.rows.append(
+                {
+                    "id": uid,
+                    "name": name,
+                    "email": email,
+                    "role": role,
+                    "created_at": self.clock(),
+                }
+            )
 
     def seed_tickets(self):
         """Three demo tickets mirroring src/data/store.js shape. Created via the
         fake itself so ref numbering/id sequence behaves like the real identity."""
         t101 = {
-            "employee_id": U["priya"], "category": "Payroll",
+            "employee_id": U["priya"],
+            "category": "Payroll",
             "subject": "May payslip missing shift allowance",
             "description": "The May payslip does not include the 12 weekend shift hours I worked.",
-            "priority": "Medium", "status": "Open",
+            "priority": "Medium",
+            "status": "Open",
         }
         t102 = {
-            "employee_id": U["marcus"], "category": "Leave",
+            "employee_id": U["marcus"],
+            "category": "Leave",
             "subject": "Question about carryover of PTO days",
             "description": "I have 5 pending PTO days. Do they carry over into next quarter or expire?",
-            "priority": "High", "status": "In Progress",
-            "assignee_id": U["alicia"], "first_reply_at": self.clock(),
+            "priority": "High",
+            "status": "In Progress",
+            "assignee_id": U["alicia"],
+            "first_reply_at": self.clock(),
             "attachment_path": "TKT-102/f1ca9.pdf",
             "attachment_name": "payslip.pdf",
             "attachment_size": 42,
         }
         t103 = {
-            "employee_id": U["dana"], "category": "Policy",
+            "employee_id": U["dana"],
+            "category": "Policy",
             "subject": "Policy on remote work equipment",
             "description": "Can I expense a second monitor given the new hybrid work policy applies to me?",
-            "priority": "Urgent", "status": "Resolved",
-            "assignee_id": U["ben"], "resolved_at": self.clock(),
+            "priority": "Urgent",
+            "status": "Resolved",
+            "assignee_id": U["ben"],
+            "resolved_at": self.clock(),
         }
         for spec in (t101, t102, t103):
             self.tickets.on_insert(spec)
         # one agent reply on TKT-102 (needs the ticket row first)
-        self.replies.on_insert({
-            "ticket_id": self.tickets.rows[1]["id"], "author_id": U["alicia"],
-            "author_role": "agent", "body": "Looking into the carryover policy now.",
-        })
+        self.replies.on_insert(
+            {
+                "ticket_id": self.tickets.rows[1]["id"],
+                "author_id": U["alicia"],
+                "author_role": "agent",
+                "body": "Looking into the carryover policy now.",
+            }
+        )
 
 
 @pytest.fixture()
 def api(monkeypatch):
     """TestClient + FakeSupabase wired in place of the real Supabase client."""
-    from app import main as app_main
     from app import config as app_config
+    from app import main as app_main
 
     fake = FakeSupabase()
     fake.seed_users()
     fake.seed_tickets()
+    fake.seed_kb()
 
     def wire(module):
         if hasattr(module, "get_client"):
@@ -395,3 +443,64 @@ def ticket_payload(employee_id, **over):
     }
     base.update(over)
     return base
+
+
+def kb_row(slug, ref, title, audience, *, category="General", keywords="",
+           summary="", search_text="", updated_at=None):
+    """A kb_documents row shaped exactly like the schema (section 9)."""
+    return {
+        "id": str(uuidlib.uuid4()),
+        "slug": slug,
+        "ref": ref,
+        "title": title,
+        "category": category,
+        "audience": audience,
+        "summary": summary or f"{title} policy summary.",
+        "keywords": keywords,
+        "search_text": search_text or f"{title} {summary or ''} {keywords}".lower(),
+        "file_path": f"pdf/{ref.lower()}-{slug}.pdf",
+        "file_size": 12345,
+        "page_count": 7,
+        "version": "v1.0",
+        "effective_date": "2026-04-01",
+        "created_at": _orchestrated.isoformat(),
+        "updated_at": updated_at or _orchestrated.isoformat(),
+    }
+
+
+_SEED_KB = [
+    dict(slug="leave-and-time-off-policy", ref="KB-E-01",
+         title="Leave and Time Off Policy", category="Leave",
+         audience="employee",
+         keywords="leave, pto, vacation, sick, carryover",
+         summary="How time off accrues, carries over and gets approved."),
+    dict(slug="hybrid-work-policy", ref="KB-E-02",
+         title="Hybrid Work Policy", category="Workplace",
+         audience="employee",
+         keywords="hybrid, remote, office, equipment",
+         summary="Weeks per month on site and what the office provides."),
+    dict(slug="attendance-working-hours-policy", ref="KB-E-03",
+         title="Attendance and Working Hours Policy", category="Workplace",
+         audience="employee",
+         keywords="attendance, working hours, shifts",
+         summary="Core hours, shift expectations and attendance recording."),
+    dict(slug="payroll-processing-sop", ref="KB-HR-01",
+         title="Payroll Processing SOP", category="Payroll",
+         audience="hr",
+         keywords="payroll, run, cutoff, anomaly",
+         summary="The monthly payroll cycle runbook, cutoffs and anomaly flow."),
+    dict(slug="exit-process-sop", ref="KB-HR-02",
+         title="Exit Process SOP", category="Offboarding", audience="hr",
+         keywords="exit, offboarding, clearance, fnf",
+         summary="Notice, clearance and final-settlement steps for leavers."),
+]
+
+
+def seed_kb_rows(fake):
+    """Routine used by the fixture (and importable by other test modules):
+    3 employee + 2 HR documents in the fake store + PDF bytes for the viewer."""
+    rows = [kb_row(**spec) for spec in _SEED_KB]
+    fake.kb_documents.rows.extend(rows)
+    for row in rows:
+        fake.storage_files[("knowledge-base", row["file_path"])] = b"%PDF-1.4 fake-pdf-bytes"
+    return rows

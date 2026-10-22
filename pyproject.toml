@@ -1,0 +1,26 @@
+# Formatter + linter config (single source of truth): ruff format + ruff check.
+# Operating rules live in CLAUDE.md > "Formatting & linting".
+# Requires a current ruff (2025 releases and later, for target py314):
+#   .venv/Scripts/python.exe -m pip install ruff   <- dev tool, NOT in requirements.txt
+[tool.ruff]
+line-length = 100
+target-version = "py314"        # this repo only imports under 3.14 (lazy class-body annotations)
+src = ["app", "tests"]          # first-party roots for import resolution
+# note: app/routers/ tombstone modules (raise on import) stay linted - no exclude
+# carve-out, so nothing ever hides from the linter
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "SIM"]
+ignore = [
+  "E501", # physical line length is the formatter's job (ruff format @ 100); long
+          # string literals/docstrings/URLs can't be auto-wrapped and would fight the formatter
+  "B008", # FastAPI DI pattern: Depends(...) in parameter defaults; used 31x in controllers
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "auto"  # preserve each file's existing CRLF/LF; no mass line-ending churn

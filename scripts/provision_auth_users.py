@@ -19,6 +19,7 @@ What it does
 Passwords can be changed any time afterwards from the Supabase Dashboard
 (Authentication -> Users) or by deleting the auth user and re-running this.
 """
+
 import argparse
 import getpass
 import os

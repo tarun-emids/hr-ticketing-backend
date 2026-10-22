@@ -12,6 +12,7 @@ frame each operation; this layer adds the milestones that matter:
 Errors propagate unchanged (classified at the controller boundary). No
 draft text, file names or signed URLs are ever logged.
 """
+
 import os
 import uuid as uuidlib
 
@@ -47,7 +48,9 @@ class DraftService:
     def _verify_employee(self, employee_id: str) -> dict:
         employee = self._users.get_by_id(employee_id)
         if not employee or employee["role"] != "employee":
-            raise HTTPException(status_code=422, detail="employeeId must belong to a known employee")
+            raise HTTPException(
+                status_code=422, detail="employeeId must belong to a known employee"
+            )
         return employee
 
     def _owned_draft(self, draft_id: str, employee_id: str) -> dict:
@@ -63,24 +66,26 @@ class DraftService:
         self._verify_employee(employee_id)
         return [draft_out(row) for row in self._drafts.list_for_employee(employee_id)]
 
-    def create_draft(self, *, employee_id: str, category: str, subject: str,
-                     description: str, priority: str) -> dict:
+    def create_draft(
+        self, *, employee_id: str, category: str, subject: str, description: str, priority: str
+    ) -> dict:
         """POST /drafts — save an incomplete ticket form."""
         self._verify_employee(employee_id)
-        saved = self._drafts.insert_draft({
-            "employee_id": employee_id,
-            "category": category,
-            "subject": subject.strip(),
-            "description": description.strip(),
-            "priority": priority,
-        })
+        saved = self._drafts.insert_draft(
+            {
+                "employee_id": employee_id,
+                "category": category,
+                "subject": subject.strip(),
+                "description": description.strip(),
+                "priority": priority,
+            }
+        )
         return draft_out(saved)
 
     def get_draft(self, draft_id: str, employee_id: str) -> dict:
         return draft_out(self._owned_draft(draft_id, employee_id))
 
-    def update_draft(self, draft_id: str, employee_id: str,
-                     patch_fields: dict) -> dict:
+    def update_draft(self, draft_id: str, employee_id: str, patch_fields: dict) -> dict:
         row = self._owned_draft(draft_id, employee_id)
         patch = dict(patch_fields)
         for field in ("subject", "description"):
@@ -140,9 +145,14 @@ class DraftService:
         ext = os.path.splitext(filename or "")[1][:16] or ".bin"
         return f"drafts/{draft_id}/{uuidlib.uuid4().hex}{ext}"
 
-    def upload_attachment(self, draft_id: str, employee_id: str,
-                          filename: str | None, content_type: str | None,
-                          data: bytes) -> dict:
+    def upload_attachment(
+        self,
+        draft_id: str,
+        employee_id: str,
+        filename: str | None,
+        content_type: str | None,
+        data: bytes,
+    ) -> dict:
         if not filename:
             raise HTTPException(status_code=422, detail="No file provided")
         draft = self._owned_draft(draft_id, employee_id)
@@ -160,11 +170,14 @@ class DraftService:
             draft_id=draft_id,
         )
 
-        self._drafts.update_draft(draft["id"], {
-            "attachment_path": path,
-            "attachment_name": filename,
-            "attachment_size": len(data),
-        })
+        self._drafts.update_draft(
+            draft["id"],
+            {
+                "attachment_path": path,
+                "attachment_name": filename,
+                "attachment_size": len(data),
+            },
+        )
         if draft.get("attachment_path"):
             self._storage.remove(draft["attachment_path"])
         return draft_out(self._owned_draft(draft_id, employee_id))
@@ -173,11 +186,14 @@ class DraftService:
         draft = self._owned_draft(draft_id, employee_id)
         if draft.get("attachment_path"):
             self._storage.remove(draft["attachment_path"])
-            self._drafts.update_draft(draft["id"], {
-                "attachment_path": None,
-                "attachment_name": None,
-                "attachment_size": None,
-            })
+            self._drafts.update_draft(
+                draft["id"],
+                {
+                    "attachment_path": None,
+                    "attachment_name": None,
+                    "attachment_size": None,
+                },
+            )
 
     def attachment_url(self, draft_id: str, employee_id: str, ttl: int) -> dict:
         draft = self._owned_draft(draft_id, employee_id)

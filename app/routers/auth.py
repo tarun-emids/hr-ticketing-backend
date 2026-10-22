@@ -3,6 +3,4 @@ Delete when convenient."""
 
 
 def __getattr__(name):
-    raise ImportError(
-        f"app.routers.auth no longer exports {name!r} — see app/controllers/auth.py"
-    )
+    raise ImportError(f"app.routers.auth no longer exports {name!r} — see app/controllers/auth.py")

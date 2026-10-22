@@ -25,9 +25,10 @@ Safety rails (see §5 of the observability spec):
 - a small in-memory per-IP rate limiter guards the endpoint. It holds one
   deque of timestamps per client IP (few entries each) and never queues work.
 """
+
 import logging
 import time
-from collections import deque, defaultdict
+from collections import defaultdict, deque
 
 from app.models import LogIngestRequest
 from app.observability import _redact_sensitive, resolve_request_id

@@ -15,6 +15,7 @@ exception is ``GET /notifications/unread-count`` — the frontend bell polls
 it every ~20 s (``src/hooks.js useNotifications``), so instrumenting it
 would flood the log; the per-request middleware line already covers it.
 """
+
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.deps import get_notification_service
@@ -68,7 +69,9 @@ def unread_count(userId: str, svc: NotificationService = Depends(get_notificatio
 
 
 @router.post("/read-all")
-def mark_all_read(body: NotificationRead, svc: NotificationService = Depends(get_notification_service)):
+def mark_all_read(
+    body: NotificationRead, svc: NotificationService = Depends(get_notification_service)
+):
     svc.require_user(body.user_id)
     with flow_operation(
         "notifications.mark_all_read",
@@ -83,8 +86,11 @@ def mark_all_read(body: NotificationRead, svc: NotificationService = Depends(get
 
 
 @router.post("/{notification_id}/read")
-def mark_read(notification_id: str, body: NotificationRead,
-              svc: NotificationService = Depends(get_notification_service)):
+def mark_read(
+    notification_id: str,
+    body: NotificationRead,
+    svc: NotificationService = Depends(get_notification_service),
+):
     svc.require_user(body.user_id)
     with flow_operation(
         "notifications.mark_read",

@@ -26,13 +26,15 @@ def test_ticket_create_accepts_camel_case_aliases():
 
 
 def test_ticket_create_accepts_snake_case_too():
-    m = TicketCreate.model_validate({
-        "employee_id": "e1",
-        "category": "Payroll",
-        "subject": "Missing shift allowance",
-        "description": "The payslip did not include weekend shift allowance.",
-        "priority": "High",
-    })
+    m = TicketCreate.model_validate(
+        {
+            "employee_id": "e1",
+            "category": "Payroll",
+            "subject": "Missing shift allowance",
+            "description": "The payslip did not include weekend shift allowance.",
+            "priority": "High",
+        }
+    )
     assert m.employee_id == "e1"
 
 
@@ -61,9 +63,10 @@ def test_ticket_create_subject_length_bounds():
 def test_ticket_create_description_length_bounds():
     with pytest.raises(ValidationError):
         TicketCreate.model_validate({**VALID_TICKET, "description": "too short"})
-    assert TicketCreate.model_validate(
-        {**VALID_TICKET, "description": "y" * 20}
-    ).description == "y" * 20
+    assert (
+        TicketCreate.model_validate({**VALID_TICKET, "description": "y" * 20}).description
+        == "y" * 20
+    )
 
 
 def test_reply_create_bounds():
@@ -75,9 +78,10 @@ def test_reply_create_bounds():
 
 
 def test_status_update_literals():
-    assert StatusUpdate.model_validate(
-        {"status": "Waiting on Employee", "actorId": "a"}
-    ).status == "Waiting on Employee"
+    assert (
+        StatusUpdate.model_validate({"status": "Waiting on Employee", "actorId": "a"}).status
+        == "Waiting on Employee"
+    )
     with pytest.raises(ValidationError):
         StatusUpdate.model_validate({"status": "Done", "actorId": "a"})
 

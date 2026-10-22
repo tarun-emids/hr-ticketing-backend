@@ -7,6 +7,5 @@ Delete when convenient."""
 
 def __getattr__(name):
     raise ImportError(
-        f"app.notifications no longer exports {name!r} — "
-        "see app/services/notification_service.py"
+        f"app.notifications no longer exports {name!r} — see app/services/notification_service.py"
     )

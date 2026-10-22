@@ -8,6 +8,7 @@ attaches an InMemorySpanExporter instead. No network, no Jaeger.
 Requires the opentelemetry packages (added to requirements.txt together with
 this file — installing requirements.txt is a prerequisite of the suite).
 """
+
 import json
 import logging
 import re
@@ -58,7 +59,9 @@ def _global_provider():
     process; OpenTelemetry ignores later set_tracer_provider calls).
     """
     if type(otel_trace.get_tracer_provider()).__name__ != "ProxyTracerProvider":
-        pytest.skip("a global TracerProvider is already installed; span assertions would not be inspectable")
+        pytest.skip(
+            "a global TracerProvider is already installed; span assertions would not be inspectable"
+        )
     exporter = InMemorySpanExporter()
     provider = TracerProvider()
     provider.add_span_processor(SimpleSpanProcessor(exporter))
@@ -110,7 +113,7 @@ def test_json_log_carries_exception_payload():
         rec = _record("bad request", exc_info=sys.exc_info())
     payload = json.loads(JsonLogFormatter().format(rec))
     assert payload["exception_type"] == "ValueError"
-    assert "raise ValueError(\"boom\")" in payload["exc"]
+    assert 'raise ValueError("boom")' in payload["exc"]
 
 
 def test_console_log_format_shape():
@@ -118,7 +121,7 @@ def test_console_log_format_shape():
     assert "INFO " in line
     assert "hrdesk.request plain message" in line
     assert "trace=" not in line  # no active span
-    assert "req=" not in line    # no request context
+    assert "req=" not in line  # no request context
 
 
 def test_log_records_carry_trace_ids_inside_a_span():
@@ -131,9 +134,7 @@ def test_log_records_carry_trace_ids_inside_a_span():
         assert f"{trace_id:032x}" == f"{ctx.trace_id:032x}"
         assert f"{span_id:016x}" == f"{ctx.span_id:016x}"
 
-        payload = json.loads(
-            JsonLogFormatter().format(_record("inside request span"))
-        )
+        payload = json.loads(JsonLogFormatter().format(_record("inside request span")))
         assert payload["trace_id"] == f"{ctx.trace_id:032x}"
         assert payload["span_id"] == f"{ctx.span_id:016x}"
 
@@ -327,6 +328,7 @@ def test_new_run_id_shape():
 # db_span helper + repository error mapping (behavior must be preserved)
 # ---------------------------------------------------------------------------
 
+
 class _Res:
     data = [{"ok": True}]
 
@@ -362,6 +364,7 @@ def test_background_span_returns_recording_span():
 # ---------------------------------------------------------------------------
 # setup_tracing switch + W3C traceparent extraction
 # ---------------------------------------------------------------------------
+
 
 def test_setup_tracing_disabled_is_a_clean_noop(monkeypatch):
     monkeypatch.setattr(app_config, "TRACE_ENABLED", False)
@@ -414,6 +417,7 @@ def test_untraced_request_starts_its_own_trace(client_with_spans):
 # Request log middleware
 # ---------------------------------------------------------------------------
 
+
 def test_request_log_middleware_outputs_one_record_per_request(caplog):
     app = FastAPI()
 
@@ -440,6 +444,7 @@ def test_request_log_middleware_outputs_one_record_per_request(caplog):
 # ---------------------------------------------------------------------------
 # Request IDs: X-Request-ID header, validation, logging
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture()
 def id_app():
@@ -489,12 +494,12 @@ def test_client_supplied_request_id_is_accepted_and_logged(id_app, caplog):
 
 def test_invalid_client_request_ids_are_replaced_safely(id_app):
     bad_ids = (
-        "short",          # < 8 chars
-        "has space",      # whitespace
-        "bad|pipe",       # injection-ish character
-        "x" * 100,        # length abuse
-        "",               # empty
-        "tab\tchar",      # control character
+        "short",  # < 8 chars
+        "has space",  # whitespace
+        "bad|pipe",  # injection-ish character
+        "x" * 100,  # length abuse
+        "",  # empty
+        "tab\tchar",  # control character
         "{log-forgery}",  # braces/quotes
     )
     for bad in bad_ids:
@@ -524,10 +529,12 @@ def test_request_log_carries_request_trace_and_span_ids(caplog):
     client = TestClient(app)
 
     with caplog.at_level(logging.INFO, logger="hrdesk.request"):
-        res = client.get("/traced", headers={"traceparent": f"00-{TRACE_ID_HEX}-{PARENT_SPAN_HEX}-01"})
+        res = client.get(
+            "/traced", headers={"traceparent": f"00-{TRACE_ID_HEX}-{PARENT_SPAN_HEX}-01"}
+        )
     rec = _request_log_records(caplog)[0]
     assert rec.http["request_id"] == res.headers["x-request-id"]
-    assert rec.http["trace_id"] == TRACE_ID_HEX          # joins the browser trace
+    assert rec.http["trace_id"] == TRACE_ID_HEX  # joins the browser trace
     assert re.fullmatch(r"[0-9a-f]{16}", rec.http["span_id"])  # server span's own id
 
 
@@ -564,6 +571,7 @@ def test_export_throttle_quiet_after_recovery():
 # ---------------------------------------------------------------------------
 # Persistent log files (rotation sink) + fail-safe behavior
 # ---------------------------------------------------------------------------
+
 
 def _reset_handlers_to_default(monkeypatch):
     monkeypatch.setattr(app_config, "LOG_TO_FILE", False)

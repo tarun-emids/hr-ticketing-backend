@@ -20,6 +20,7 @@ make the log sink self-referential. Only rejections get a dedicated record:
 without logging any payload contents; validation rejections stay visible
 through the standard 422 middleware line.
 """
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app.deps import get_log_ingest_service
@@ -31,9 +32,11 @@ router = APIRouter(prefix="/logs", tags=["logs"])
 
 
 @router.post("/ingest", status_code=202)
-def ingest_frontend_events(payload: LogIngestRequest,
-                           request: Request,
-                           svc: LogIngestService = Depends(get_log_ingest_service)):
+def ingest_frontend_events(
+    payload: LogIngestRequest,
+    request: Request,
+    svc: LogIngestService = Depends(get_log_ingest_service),
+):
     """Accept 1..20 validated frontend log events; writes to the shared log."""
     client_ip = request.client.host if request.client else "unknown"
     if not svc.allow(client_ip):

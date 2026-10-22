@@ -27,8 +27,10 @@ def test_upload_attachment_success(api):
 
 def test_signed_url_for_stored_attachment(api):
     api.client.post(
-        "/api/tickets", json={
-            "employeeId": U["priya"], "category": "Other",
+        "/api/tickets",
+        json={
+            "employeeId": U["priya"],
+            "category": "Other",
             "subject": "Office badge replacement needed",
             "description": "My badge stopped working at the lobby reader and HR needs a replacement.",
         },
@@ -61,7 +63,10 @@ def test_reupload_replaces_previous_attachment(api):
     t = r.json()
     assert t["attachment"]["name"] == "two.txt"
     assert t["attachment"]["size"] == len(b"second payload")
-    keys = list(api.fake.storage_files.keys())
+    # scope to the attachments bucket — the fake's store also holds the
+    # seeded knowledge-base PDFs (bucket "knowledge-base", paths pdf/...)
+    keys = [k for k in api.fake.storage_files if k[0] == "ticket-attachments"]
+    assert keys  # both uploads landed in the ticket bucket
     assert all(k[1].endswith(".txt") for k in keys)
 
 

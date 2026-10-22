@@ -1,11 +1,14 @@
-import pytest
-
 from app.models import attachment_out, ticket_out, turn_out, user_out
 
 
 def test_user_out_shape():
     u = {"id": "u1", "name": "Priya Sharma", "email": "priya@acme.com", "role": "employee"}
-    assert user_out(u) == {"id": "u1", "name": "Priya Sharma", "email": "priya@acme.com", "role": "employee"}
+    assert user_out(u) == {
+        "id": "u1",
+        "name": "Priya Sharma",
+        "email": "priya@acme.com",
+        "role": "employee",
+    }
 
 
 def test_turn_out_maps_snake_to_camel():
@@ -67,33 +70,62 @@ def test_ticket_out_full_shape():
     assert t["turns"] == []
     assert t["attachment"] is None
     assert set(t.keys()) == {
-        "id", "uuid", "employeeId", "category", "subject", "description",
-        "priority", "status", "assigneeId", "createdAt", "updatedAt",
-        "firstReplyAt", "resolvedAt", "closedBy", "turns", "attachment",
+        "id",
+        "uuid",
+        "employeeId",
+        "category",
+        "subject",
+        "description",
+        "priority",
+        "status",
+        "assigneeId",
+        "createdAt",
+        "updatedAt",
+        "firstReplyAt",
+        "resolvedAt",
+        "closedBy",
+        "turns",
+        "attachment",
     }
 
 
 def test_ticket_out_includes_turns_and_attachment():
     row = {
-        "ref": "TKT-101", "id": "uuid-1", "employee_id": "e1",
-        "category": "Payroll", "subject": "Missing shift allowance",
+        "ref": "TKT-101",
+        "id": "uuid-1",
+        "employee_id": "e1",
+        "category": "Payroll",
+        "subject": "Missing shift allowance",
         "description": "The payslip did not include weekend shift allowance.",
-        "priority": "High", "status": "Open", "assignee_id": "ag1",
-        "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z",
+        "priority": "High",
+        "status": "Open",
+        "assignee_id": "ag1",
+        "created_at": "2026-01-01T00:00:00Z",
+        "updated_at": "2026-01-01T00:00:00Z",
         "first_reply_at": "2026-01-01T01:00:00Z",
-        "resolved_at": None, "closed_by": None,
-        "attachment_path": "TKT-101/x.png", "attachment_name": "x.png",
+        "resolved_at": None,
+        "closed_by": None,
+        "attachment_path": "TKT-101/x.png",
+        "attachment_name": "x.png",
         "attachment_size": 7,
     }
-    replies = [{
-        "author_id": "ag1", "author_role": "agent", "body": "got it",
-        "created_at": "2026-01-01T01:00:00Z",
-    }]
+    replies = [
+        {
+            "author_id": "ag1",
+            "author_role": "agent",
+            "body": "got it",
+            "created_at": "2026-01-01T01:00:00Z",
+        }
+    ]
     t = ticket_out(row, replies)
-    assert t["turns"] == [{
-        "authorId": "ag1", "role": "agent", "text": "got it",
-        "at": "2026-01-01T01:00:00Z",
-    }]
+    assert t["turns"] == [
+        {
+            "authorId": "ag1",
+            "role": "agent",
+            "text": "got it",
+            "at": "2026-01-01T01:00:00Z",
+        }
+    ]
     assert t["attachment"]["path"] == "TKT-101/x.png"
     assert t["firstReplyAt"] == "2026-01-01T01:00:00Z"
     assert t["closedBy"] is None

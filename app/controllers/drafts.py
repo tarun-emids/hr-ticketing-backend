@@ -107,7 +107,9 @@ def delete_draft(draft_id: str, employeeId: str, svc: DraftService = Depends(get
 
 
 @router.post("/{draft_id}/submit")
-def submit_draft(draft_id: str, payload: DraftSubmit, svc: DraftService = Depends(get_draft_service)):
+def submit_draft(
+    draft_id: str, payload: DraftSubmit, svc: DraftService = Depends(get_draft_service)
+):
     """Validate and convert the saved draft into a normal ticket."""
     with flow_operation(
         "drafts.submit",
@@ -148,7 +150,9 @@ def upload_draft_attachment(
 
 @router.delete("/{draft_id}/attachment", status_code=STATUS_NO_BODY)
 def delete_draft_attachment(
-    draft_id: str, employeeId: str, svc: DraftService = Depends(get_draft_service),
+    draft_id: str,
+    employeeId: str,
+    svc: DraftService = Depends(get_draft_service),
 ):
     with flow_operation(
         "drafts.attachment.delete",

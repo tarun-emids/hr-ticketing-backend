@@ -4,7 +4,6 @@ import pytest
 
 from tests.integration.conftest import create_ticket
 
-
 pytestmark = pytest.mark.integration
 
 
@@ -48,18 +47,25 @@ def test_live_golden_flow_reply_resolve_close_reopen(live, cleanup):
     assert t["firstReplyAt"] is not None
     assert t["turns"][-1]["text"] == "integration flow reply"
 
-    r = live["client"].patch(f"/api/tickets/{ref}/status", json={"status": "Resolved", "actorId": agent})
+    r = live["client"].patch(
+        f"/api/tickets/{ref}/status", json={"status": "Resolved", "actorId": agent}
+    )
     assert r.status_code == 200 and r.json()["resolvedAt"] is not None
 
-    r = live["client"].patch(f"/api/tickets/{ref}/status", json={"status": "Closed", "actorId": agent})
+    r = live["client"].patch(
+        f"/api/tickets/{ref}/status", json={"status": "Closed", "actorId": agent}
+    )
     assert r.json()["closedBy"] == agent
 
-    r = live["client"].patch(f"/api/tickets/{ref}/status", json={"status": "Open", "actorId": agent})
+    r = live["client"].patch(
+        f"/api/tickets/{ref}/status", json={"status": "Open", "actorId": agent}
+    )
     t = r.json()
     assert t["resolvedAt"] is None and t["closedBy"] is None
 
     r = live["client"].post(
-        f"/api/tickets/{ref}/replies", json={"authorId": employee, "text": "employee reopens the thread with more info"}
+        f"/api/tickets/{ref}/replies",
+        json={"authorId": employee, "text": "employee reopens the thread with more info"},
     )
     assert r.json()["status"] == "Waiting on Employee"
 
@@ -79,10 +85,14 @@ def test_live_assign_pickup_reply(live, cleanup):
 def test_live_employee_reply_waits(live, cleanup):
     ref = create_ticket(live)
     employee = live["employees"][2]["id"]
-    r = live["client"].patch(f"/api/tickets/{ref}/status", json={"status": "In Progress", "actorId": live["agents"][0]["id"]})
+    r = live["client"].patch(
+        f"/api/tickets/{ref}/status",
+        json={"status": "In Progress", "actorId": live["agents"][0]["id"]},
+    )
     assert r.json()["status"] == "In Progress"
     r = live["client"].post(
-        f"/api/tickets/{ref}/replies", json={"authorId": employee, "text": "adding details from the employee side"}
+        f"/api/tickets/{ref}/replies",
+        json={"authorId": employee, "text": "adding details from the employee side"},
     )
     assert r.json()["status"] == "Waiting on Employee"
 
@@ -91,17 +101,26 @@ def test_live_validation_422(live, cleanup):
     employee = live["employees"][0]["id"]
     ref = create_ticket(live)
 
-    r = live["client"].post("/api/tickets", json={
-        "employeeId": employee, "category": "Benefits",
-        "subject": "x", "description": "This description is longer than twenty chars.",
-    })
+    r = live["client"].post(
+        "/api/tickets",
+        json={
+            "employeeId": employee,
+            "category": "Benefits",
+            "subject": "x",
+            "description": "This description is longer than twenty chars.",
+        },
+    )
     assert r.status_code == 422
 
-    r = live["client"].post("/api/tickets", json={
-        "employeeId": employee, "category": "NotACategory",
-        "subject": "Integration invalid category",
-        "description": "This description is longer than twenty chars.",
-    })
+    r = live["client"].post(
+        "/api/tickets",
+        json={
+            "employeeId": employee,
+            "category": "NotACategory",
+            "subject": "Integration invalid category",
+            "description": "This description is longer than twenty chars.",
+        },
+    )
     assert r.status_code == 422
 
     r = live["client"].patch(

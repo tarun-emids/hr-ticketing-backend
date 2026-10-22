@@ -12,14 +12,15 @@ values), duration, error class, generated refs/uuids. Read paths stay
 uninstrumented on purpose: middleware lines + httpx rows cover them, and a
 log per read would be pure noise.
 """
+
 import re
 import time
 from typing import Optional
 
 from app.observability import flow_event
 from app.repositories.base import (
-    SupabaseRepository,
     UUID_RE,
+    SupabaseRepository,
     first_of,
     rows_of,
 )
@@ -87,9 +88,9 @@ class TicketRepository(SupabaseRepository):
         (same shape the old notifications module produced with db())."""
         out = []
         for status in statuses:
-            out.extend(rows_of(
-                self.table().select("*").is_("assignee_id", None).eq("status", status)
-            ))
+            out.extend(
+                rows_of(self.table().select("*").is_("assignee_id", None).eq("status", status))
+            )
         return out
 
     # -- writes ------------------------------------------------------------
@@ -195,7 +196,10 @@ class TicketRepository(SupabaseRepository):
     def has_agent_reply(self, ticket_uuid: str) -> bool:
         return bool(
             rows_of(
-                self._client.table("replies").select("id")
-                .eq("ticket_id", ticket_uuid).eq("author_role", "agent").limit(1)
+                self._client.table("replies")
+                .select("id")
+                .eq("ticket_id", ticket_uuid)
+                .eq("author_role", "agent")
+                .limit(1)
             )
         )

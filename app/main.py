@@ -20,15 +20,25 @@ Run:
     uvicorn app.main:app --reload --port 8000
 Docs at http://localhost:8000/docs
 """
+
 import asyncio
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app import config as app_config
-from app.controllers import attachments, auth, drafts, logs, notifications, tickets, users
+from app.controllers import (
+    attachments,
+    auth,
+    drafts,
+    knowledge_base,
+    logs,
+    notifications,
+    tickets,
+    users,
+)
 from app.resilience import breakers_snapshot
 from app.services.notification_service import (
     SLA_SWEEP_INTERVAL_SECONDS,
@@ -44,6 +54,14 @@ from app.observability import (
     record_error_on_current_span,
     setup_logging,
     setup_tracing,
+)
+from app.repositories.notification_repository import NotificationRepository
+from app.repositories.ticket_repository import TicketRepository
+from app.repositories.user_repository import UserRepository
+from app.resilience import breakers_snapshot
+from app.services.notification_service import (
+    SLA_SWEEP_INTERVAL_SECONDS,
+    NotificationService,
 )
 
 setup_logging()
@@ -86,10 +104,8 @@ async def lifespan(_app: FastAPI):
     finally:
         flow_event("app.shutdown", operation="app.lifecycle")
         jobs.cancel()
-        try:
+        with suppress(asyncio.CancelledError):
             await jobs
-        except asyncio.CancelledError:
-            pass
 
 
 app = FastAPI(
@@ -128,6 +144,20 @@ app.include_router(notifications.router, prefix="/api")
 app.include_router(users.router, prefix="/api")
 # frontend log events → the same backend/logs/app.log backend records use
 app.include_router(logs.router, prefix="/api")
+# knowledge base (policy library: search, metadata, signed PDF URLs)
+app.include_router(knowledge_base.router, prefix="/api")
+
+
+@app.get("/")
+def root():
+    """Service banner: bare root used to answer a bare 404, which read like an
+    error. The API surface lives under /api — point humans at the useful doors."""
+    return {
+        "name": "HR Desk API",
+        "status": "running",
+        "health": "/health",
+        "docs": "/docs",
+    }
 
 
 @app.get("/health")

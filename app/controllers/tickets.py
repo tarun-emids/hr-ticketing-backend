@@ -13,6 +13,7 @@ milestones: services emit ``ticket.service.*``, repositories
 (subject/description/replies) is never logged; refs, statuses, categories,
 priorities and UUIDs only.
 """
+
 from typing import Optional
 
 from fastapi import APIRouter, Depends
@@ -136,7 +137,9 @@ def add_reply(tid: str, payload: ReplyCreate, svc: TicketService = Depends(get_t
 
 
 @router.patch("/tickets/{tid}/status")
-def update_status(tid: str, payload: StatusUpdate, svc: TicketService = Depends(get_ticket_service)):
+def update_status(
+    tid: str, payload: StatusUpdate, svc: TicketService = Depends(get_ticket_service)
+):
     """store.js updateStatus parity: Resolved stamps resolvedAt, Closed also
     stamps closedBy, reopening clears both."""
     with flow_operation(

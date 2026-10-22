@@ -5,8 +5,8 @@ These tests create real tickets/replies/attachments, so every test declares
 what it created (refs + storage paths) and the fixture deletes them again in
 teardown. Runs only when opted in: pytest -m integration
 """
-from types import SimpleNamespace
-import uuid as uuidlib
+
+from contextlib import suppress
 
 import pytest
 from fastapi.testclient import TestClient
@@ -38,8 +38,8 @@ def live():
         "client": client,
         "employees": employees,
         "agents": agents,
-        "refs": [],       # ticket refs to delete in teardown
-        "paths": [],      # storage paths to delete in teardown
+        "refs": [],  # ticket refs to delete in teardown
+        "paths": [],  # storage paths to delete in teardown
     }
 
 
@@ -48,28 +48,32 @@ def cleanup(live):
     yield live
     sb = cfg.get_client()
     for path in live["paths"]:
-        try:
+        with suppress(Exception):
             sb.storage.from_(BUCKET).remove([path])
-        except Exception:
-            pass
     for ref in live["refs"]:
-        try:
+        with suppress(Exception):
             sb.table("tickets").delete().eq("ref", ref).execute()
-        except Exception:
-            pass
 
 
-def create_ticket(live, employee=None, category="Payroll", priority="High",
-                  subject="Automated integration test ticket",
-                  description="Created by the automated integration suite and deleted again in teardown."):
+def create_ticket(
+    live,
+    employee=None,
+    category="Payroll",
+    priority="High",
+    subject="Automated integration test ticket",
+    description="Created by the automated integration suite and deleted again in teardown.",
+):
     employee = employee or live["employees"][0]["id"]
-    r = live["client"].post("/api/tickets", json={
-        "employeeId": employee,
-        "category": category,
-        "subject": subject,
-        "description": description,
-        "priority": priority,
-    })
+    r = live["client"].post(
+        "/api/tickets",
+        json={
+            "employeeId": employee,
+            "category": category,
+            "subject": subject,
+            "description": description,
+            "priority": priority,
+        },
+    )
     assert r.status_code == 201, r.text
     ref = r.json()["id"]
     live["refs"].append(ref)

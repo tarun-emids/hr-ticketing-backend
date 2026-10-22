@@ -11,7 +11,7 @@ mock store for real HTTP calls with minimal changes.
 ```
 app/
   __init__.py
-  config.py               # settings + the ONE Supabase client singleton
+  config.py               # settings + the ONE Supabase client singleton (+ timeout budgets)
   main.py                 # FastAPI wiring: controllers, lifespan, exception handler
   models.py               # request DTOs (pydantic) + row -> camelCase serializers
   deps.py                 # DI graph:  controller --Depends--> service --> repository --> client
@@ -24,6 +24,7 @@ app/
     notifications.py      #   /api/notifications list/read/read-all/sweep
     users.py              #   /api/users, /api/users/agents, /api/meta
     logs.py               #   POST /api/logs/ingest (frontend events → app.log)
+    knowledge_base.py     #   /api/kb list + search, /{slug} metadata, /{slug}/file signed PDF
   services/               # business rules — no HTTP, no database specifics
     ticket_service.py     #   create/list/get/replies, status/priority/category, assign, auto-assign, workload
     draft_service.py      #   draft CRUD, submit validation, attachment swap
@@ -31,13 +32,26 @@ app/
     user_service.py       #   directory lists + static meta
     auth_service.py       #   GoTrue password grant + account join
     log_ingest_service.py #   validated frontend events → the shared log
+    kb_service.py         #   role pools, weighted search, visibility gates (§12)
   repositories/           # the ONLY layer that touches Supabase
-    base.py               #   unwrap/run/rows_of/first_of + SupabaseRepository base
+    base.py               #   unwrap/run/rows_of/first_of + SupabaseRepository base (retry-injected)
     user_repository.py
     ticket_repository.py  #   tickets + replies (thread) + ref/uuid resolver
     draft_repository.py
     notification_repository.py
     attachment_storage.py #   Storage bucket ops (upload/remove/signed URL, 413/502 mapping)
+    kb_repository.py      #   kb_documents metadata reads
+    kb_storage.py         #   knowledge-base bucket: signed view/download PDF URLs
+```
+
+Outside the three layers:
+
+```
+  resilience.py           # circuit breakers for db/auth/storage (§11)
+  retries.py              # shared timeout/retry policy for every outbound call (§13)
+  observability.py        # structured logging + tracing instrumentation
+scripts/
+  seed_knowledge_base.py  # renders PDFs (app/kb_seed content) -> bucket + metadata rows
 ```
 
 Rules of the layering:
@@ -213,6 +227,22 @@ curl -X PATCH http://localhost:8000/api/tickets/TKT-101/assignee \
 - Errors: `404` unknown ticket, `413` file too large, `422` validation/unknown user,
   `400/502` database or storage rejection.
 
+### Commit hooks (formatting + linting)
+
+Backend commits run Ruff (lint + black-style format) through `pre-commit`
+(rules in `.ruff.toml`, hooks in `.pre-commit-config.yaml`). Enable once per
+clone, then commit as usual:
+
+```bash
+pip install pre-commit
+pre-commit install
+pre-commit run --all-files        # one-time pass over the existing code
+```
+
+`ruff-check --fix` auto-fixes what can be auto-fixed; `ruff-format` reformats
+staged files black-style before the commit is final. To bypass in an
+emergency explicitly: `git commit --no-verify`.
+
 ## 10. In-app notifications
 
 Event-driven and channel-agnostic. Ticket writes stay decoupled from
@@ -338,12 +368,11 @@ received on the half-open probe is evidence of life and closes the circuit.
 - **Background jobs** (SLA sweep, retention) route through the same `run()`,
   so an open db circuit also stops them from hammering PostgREST every 30
   minutes; failures are already swallowed by their own error handling.
-- **Network timeouts** (verified against installed supabase-py 2.32):
-  PostgREST 120 s, Storage 20 s, auth uses raw httpx default (5 s). All
-  bounded, so a stalled dependency eventually raises and the breaker can
-  count it — no extra configuration required. (The 120 s PostgREST ceiling
-  is generous for this workload; trimming it via `ClientOptions` would make
-  the first few failures trip the breaker faster — future tuning.)
+- **Network timeouts** (see §13): the Supabase client is built with explicit
+  budgets (`SUPABASE_TIMEOUT` 60 s overall, `SUPABASE_CONNECT_TIMEOUT` 10 s
+  connect-phase) via `ClientOptions` in `app/config.py`, so a stalled
+  or dead upstream raises within seconds instead of riding the library's
+  120 s default — the breaker still counts those failures as before.
 - Test coverage: `tests/unit/test_circuit_breaker.py` (state machine +
   `run()` classification), `tests/unit/test_auth_breaker.py`,
   `tests/api/test_breakers.py` (fail-fast through real endpoints,
