@@ -205,7 +205,7 @@ class NotificationService:
             "actorName": row.get("actor_name"),
             "payload": row.get("payload", {}),
             "message": row.get("message", ""),
-            "read": row["read"],
+            "read": bool(row["read"]),
             "readAt": row.get("read_at"),
             "createdAt": row["created_at"],
         }
@@ -325,7 +325,13 @@ class NotificationService:
         triggered = 0
         for row in self._tickets.unassigned_by_statuses(("Open", "In Progress")):
             threshold_h = sla_threshold_hours(row["priority"])
-            created = datetime.fromisoformat(row["created_at"].replace("Z", "+00:00"))
+            created_value = row["created_at"]
+            if isinstance(created_value, str):
+                created = datetime.fromisoformat(created_value.replace("Z", "+00:00"))
+            else:
+                created = created_value
+                if created.tzinfo is None:
+                    created = created.replace(tzinfo=timezone.utc)
             if now - created < timedelta(hours=threshold_h):
                 continue
             if threshold_h in self._notifications.prior_sla_thresholds(row["id"]):

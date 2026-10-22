@@ -1,4 +1,4 @@
-"""Service layer — business rules, no HTTP, no Supabase.
+"""Service layer — business rules, no database access.
 
 Services own the domain logic (lifecycle rules, notification emission,
 draft submission, workload routing). They are constructed with repository

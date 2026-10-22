@@ -1,52 +1,34 @@
-"""Ticket rows (public.tickets) + the ticket thread (public.replies).
-
-The ticket reference resolver moved here from the old routers/tickets_core:
-tickets are addressed as `TKT-<n>` (what the frontend uses in URLs) or by raw
-Postgres uuid, and every repo lookup needs the same (column, value) mapping.
-
-Observability: the WRITE paths are instrumented (``ticket.repository.insert_*
-``), plus the shared update builder (``ticket.repository.update_*``) and reply
-inserts (``reply.repository.*``). They are complementary to run()'s db_span
-(trace layer) — safe metadata only: table, patched COLUMN NAMES (never
-values), duration, error class, generated refs/uuids. Read paths stay
-uninstrumented on purpose: middleware lines + httpx rows cover them, and a
-log per read would be pure noise.
-"""
+"""PostgreSQL ticket rows and ticket-thread operations."""
 
 import re
-import time
 from typing import Optional
 
-from app.observability import flow_event
-from app.repositories.base import (
-    UUID_RE,
-    SupabaseRepository,
-    first_of,
-    rows_of,
-)
+from psycopg_pool import ConnectionPool
+
+from app.repositories.base import UUID_RE, as_uuid, first_of, insert_row, rows_of, update_row
 
 REF_RE = re.compile(r"^TKT-\d+$")
-
-REF_FIELD = "ref"
-ID_FIELD = "id"
 
 
 def ticket_ref(tid: str) -> tuple[str, str]:
     """Resolve a UUID or a TKT-<n> reference to (column, value)."""
     if UUID_RE.match(tid):
-        return ID_FIELD, tid
-    col_val = tid if REF_RE.match(tid) else f"TKT-{tid}"
-    return REF_FIELD, col_val
+        return "id", tid
+    return "ref", tid if REF_RE.match(tid) else f"TKT-{tid}"
 
 
-class TicketRepository(SupabaseRepository):
-    TABLE_NAME = "tickets"
-
-    # -- reads -------------------------------------------------------------
+class TicketRepository:
+    def __init__(self, database: ConnectionPool):
+        self._database = database
 
     def get_by_key(self, tid: str) -> Optional[dict]:
-        col, val = ticket_ref(tid)
-        return first_of(self.table().select("*").eq(col, val).limit(1))
+        column, value = ticket_ref(tid)
+        return first_of(
+            self._database,
+            f"SELECT * FROM tickets WHERE {column} = %s LIMIT 1",
+            (as_uuid(value) if column == "id" else value,),
+            table="tickets",
+        )
 
     def list_filtered(
         self,
@@ -60,146 +42,72 @@ class TicketRepository(SupabaseRepository):
         unassigned: bool = False,
         limit: int = 200,
     ) -> list[dict]:
-        """Newest-first by updated_at; list items never embed the thread."""
-        query = self.table().select("*").order("updated_at", desc=True).limit(min(limit, 500))
-        if status:
-            query = query.eq("status", status)
-        if category:
-            query = query.eq("category", category)
-        if priority:
-            query = query.eq("priority", priority)
-        if employee_id:
-            query = query.eq("employee_id", employee_id)
-        if assignee_id:
-            query = query.eq("assignee_id", assignee_id)
+        filters = []
+        params = []
+        for column, value in (
+            ("status", status),
+            ("category", category),
+            ("priority", priority),
+            ("employee_id", employee_id),
+            ("assignee_id", assignee_id),
+        ):
+            if value is not None:
+                filters.append(f"{column} = %s")
+                params.append(as_uuid(value) if column in ("employee_id", "assignee_id") else value)
         if unassigned:
-            query = query.is_("assignee_id", None)
+            filters.append("assignee_id IS NULL")
         if q:
-            query = query.ilike("subject", f"%{q}%")
-        return rows_of(query)
+            filters.append("subject ILIKE %s")
+            params.append(f"%{q}%")
+        where = f" WHERE {' AND '.join(filters)}" if filters else ""
+        params.append(min(limit, 500))
+        return rows_of(
+            self._database,
+            f"SELECT * FROM tickets{where} ORDER BY updated_at DESC LIMIT %s",
+            tuple(params),
+            table="tickets",
+        )
 
     def scan_assignee_status(self, limit: int = 2000) -> list[dict]:
-        """Lightweight full scan for workload aggregation in Python (v2 supabase
-        has no .not_ chains; one small scan beats a dozen queries)."""
-        return rows_of(self.table().select("assignee_id,status").limit(limit))
+        return rows_of(
+            self._database,
+            "SELECT assignee_id, status FROM tickets LIMIT %s",
+            (limit,),
+            table="tickets",
+        )
 
     def unassigned_by_statuses(self, statuses: tuple) -> list[dict]:
-        """Used by the SLA sweep: one query per status, results concatenated
-        (same shape the old notifications module produced with db())."""
-        out = []
-        for status in statuses:
-            out.extend(
-                rows_of(self.table().select("*").is_("assignee_id", None).eq("status", status))
-            )
-        return out
-
-    # -- writes ------------------------------------------------------------
-
-    def insert_ticket(self, row: dict, operation: str = "tickets.create") -> dict:
-        """POST /tickets + draft-submit write step — instrumented. The
-        operation tag identifies the calling flow (create vs drafts.submit)."""
-        started = time.perf_counter()
-        flow_event(
-            "ticket.repository.insert_started",
-            operation=operation,
+        placeholders = ", ".join(["%s"] * len(statuses))
+        return rows_of(
+            self._database,
+            f"SELECT * FROM tickets WHERE assignee_id IS NULL AND status IN ({placeholders})",
+            statuses,
             table="tickets",
         )
-        try:
-            new_row = rows_of(self.table().insert(row).select("*"))[0]
-        except Exception as exc:
-            flow_event(
-                "ticket.repository.insert_failed",
-                operation=operation,
-                table="tickets",
-                duration_ms=round((time.perf_counter() - started) * 1000, 1),
-                error=type(exc).__name__,
-            )
-            raise
-        flow_event(
-            "ticket.repository.insert_completed",
-            operation=operation,
-            table="tickets",
-            duration_ms=round((time.perf_counter() - started) * 1000, 1),
-            ticket_ref=new_row.get("ref"),
-            status=new_row.get("status"),
-        )
-        return new_row
+
+    def insert_ticket(self, row: dict) -> dict:
+        return insert_row(self._database, "tickets", row)
 
     def update_ticket(self, ticket_uuid: str, patch: dict) -> None:
-        """Patch by uuid (the trigger bumps updated_at). Instrumented: which
-        COLUMNS changed (never their values) + duration."""
-        started = time.perf_counter()
-        patch_columns = sorted(patch)
-        flow_event(
-            "ticket.repository.update_started",
-            operation=None,  # several flows share this builder
-            table="tickets",
-            patch_columns=patch_columns,
-        )
-        try:
-            rows_of(self.table().update(patch).eq("id", ticket_uuid))
-        except Exception as exc:
-            flow_event(
-                "ticket.repository.update_failed",
-                table="tickets",
-                patch_columns=patch_columns,
-                duration_ms=round((time.perf_counter() - started) * 1000, 1),
-                error=type(exc).__name__,
-            )
-            raise
-        flow_event(
-            "ticket.repository.update_completed",
-            table="tickets",
-            patch_columns=patch_columns,
-            ticket_uuid=ticket_uuid,
-            duration_ms=round((time.perf_counter() - started) * 1000, 1),
-        )
-
-    # -- replies / thread --------------------------------------------------
+        update_row(self._database, "tickets", ticket_uuid, patch)
 
     def list_replies(self, ticket_uuid: str) -> list[dict]:
         return rows_of(
-            self._client.table("replies")
-            .select("*")
-            .eq("ticket_id", ticket_uuid)
-            .order("created_at")
+            self._database,
+            "SELECT * FROM replies WHERE ticket_id = %s ORDER BY created_at",
+            (as_uuid(ticket_uuid),),
+            table="replies",
         )
 
-    def insert_reply(self, row: dict, operation: str | None = None) -> dict:
-        inserted: dict = {}
-        started = time.perf_counter()
-        flow_event(
-            "reply.repository.insert_started",
-            operation=operation,
-            author_role=row.get("author_role"),
-        )
-        try:
-            inserted = rows_of(
-                self._client.table("replies").insert(row).select("*")
-            )[0]
-        except Exception as exc:
-            flow_event(
-                "reply.repository.insert_failed",
-                operation=operation,
-                duration_ms=round((time.perf_counter() - started) * 1000, 1),
-                error=type(exc).__name__,
-            )
-            raise
-        flow_event(
-            "reply.repository.insert_completed",
-            operation=operation,
-            reply_uuid=inserted.get("id"),
-            duration_ms=round((time.perf_counter() - started) * 1000, 1),
-        )
-        return inserted
+    def insert_reply(self, row: dict) -> dict:
+        return insert_row(self._database, "replies", row)
 
     def has_agent_reply(self, ticket_uuid: str) -> bool:
         return bool(
-            rows_of(
-                self._client.table("replies")
-                .select("id")
-                .eq("ticket_id", ticket_uuid)
-                .eq("author_role", "agent")
-                .limit(1)
+            first_of(
+                self._database,
+                "SELECT id FROM replies WHERE ticket_id = %s AND author_role = %s LIMIT 1",
+                (as_uuid(ticket_uuid), "agent"),
+                table="replies",
             )
         )

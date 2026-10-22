@@ -16,13 +16,12 @@ What gets a span (when tracing is on):
 
 - every ``/api`` HTTP request: a server span, joined to the browser trace
   via the W3C ``traceparent`` header the frontend client sends;
-- every Supabase HTTP round-trip: httpx client spans (automatic);
-- every PostgREST call that goes through ``app.repositories.base.run()``:
-  a semantic db span with the operation and, when obtainable, the table;
+- every PostgreSQL call that goes through ``app.repositories.base.run()``:
+  a semantic db span with the operation and table;
 - each background notification job run: a root span per sweep.
 
-Nothing inside Supabase/Postgres itself is instrumented — spans only cover
-the HTTP hops this backend actually makes. Jaeger is the trace viewer;
+Nothing inside PostgreSQL itself is instrumented — spans cover the database
+calls this backend makes. Jaeger is the trace viewer;
 persistent APPLICATION logs are the rotating JSON files, not Jaeger.
 
 Security: never log header values, secrets, or ticket content (subject,
@@ -485,7 +484,6 @@ def setup_tracing(app) -> bool:
             OTLPSpanExporter,
         )
         from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
-        from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
         from opentelemetry.sdk.resources import Resource
         from opentelemetry.sdk.trace import TracerProvider
         from opentelemetry.sdk.trace.export import BatchSpanProcessor
@@ -504,8 +502,6 @@ def setup_tracing(app) -> bool:
     _otel_trace.set_tracer_provider(provider)
     _install_exporter_log_throttle()
 
-    # Client spans for every Supabase postgrest/gotrue/storage HTTP call.
-    HTTPXClientInstrumentor().instrument()
     # Server spans per /api request: extracts the frontend's traceparent and
     # joins each browser-initiated trace to its server span. /health excluded.
     FastAPIInstrumentor.instrument_app(app, excluded_urls="health")
@@ -518,7 +514,7 @@ def setup_tracing(app) -> bool:
 
 @contextmanager
 def db_span(name: str, attributes: dict | None = None):
-    """Semantic span around a Supabase PostgREST call.
+    """Semantic span around a PostgreSQL statement.
 
     When tracing is off (or OTel is absent) the yielded span is None and the
     body runs unchanged — the API tracer only creates non-recording spans,

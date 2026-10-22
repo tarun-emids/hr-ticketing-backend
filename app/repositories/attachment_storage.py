@@ -1,98 +1,85 @@
-"""Supabase Storage repository for ticket/draft attachments.
+"""PostgreSQL-backed attachment blobs and short-lived signed download URLs."""
 
-The `ticket-attachments` bucket is private; files are only readable through
-short-lived signed URLs the backend signs on demand (service-role key).
-This is the boundary that turns storage/network failures into the API's
-413/502 responses — services never see storage3 exceptions.
-
-Every outbound call rides the storage circuit breaker under the shared
-retry policy (app/retries.py): signing is a replayable read; upload/remove
-retry only when the request provably never left the client (guarded) —
-storage PUTs replayed after an ambiguous failure could duplicate objects.
-"""
+import base64
+import hashlib
+import hmac
+import time
 
 from fastapi import HTTPException
+from psycopg_pool import ConnectionPool
 
-from app.config import ATTACHMENT_BUCKET, MAX_ATTACHMENT_BYTES, SIGNED_URL_TTL, SUPABASE_URL
-from app.resilience import storage_breaker, CircuitOpenError
-from app.retries import GUARDED, READ, retry_call
+from app import config
+from app.config import MAX_ATTACHMENT_BYTES, SIGNED_URL_TTL
+from app.repositories.base import first_of, run
 
 MB = 1024 * 1024
+DOWNLOAD_PATH = "/api/attachments/file"
 
 
 class AttachmentStorageRepository:
-    """Bucket operator. Not a table-backed SupabaseRepository — Storage has a
-    different API surface, but it belongs in the same data-access layer."""
-
-    def __init__(self, client):
-        self._client = client
-
-    # -- helpers -----------------------------------------------------------
+    def __init__(self, database: ConnectionPool):
+        self._database = database
 
     @staticmethod
     def clamp_ttl(ttl: int) -> int:
         return max(60, min(ttl, 86400))
 
-    # -- operations --------------------------------------------------------
+    @staticmethod
+    def _signing_key() -> bytes:
+        key = config.ATTACHMENT_SIGNING_KEY.encode()
+        if len(key) < 32:
+            raise RuntimeError("ATTACHMENT_SIGNING_KEY must contain at least 32 characters.")
+        return key
 
     def upload(self, path: str, data: bytes, content_type: str | None) -> None:
-        storage = self._client.storage.from_(ATTACHMENT_BUCKET)
-        try:
-            retry_call(
-                lambda: storage_breaker.call(lambda: storage.upload(
-                    path,
-                    data,
-                    {"contentType": content_type or "application/octet-stream", "upsert": "false"},
-                )),
-                mode=GUARDED,
-            )
-        except CircuitOpenError:
-            raise HTTPException(
-                status_code=503,
-                detail="Attachment storage is temporarily unavailable — try again shortly.",
-            ) from None
-        except Exception as e:  # storage3 raises generic StorageException
-            raise HTTPException(status_code=502, detail=f"Storage upload failed: {e}") from e
+        run(
+            self._database,
+            "INSERT INTO attachments (path, data, content_type) VALUES (%s, %s, %s)",
+            (path, data, content_type or "application/octet-stream"),
+            fetch="none",
+            table="attachments",
+        )
 
     def remove(self, path: str) -> None:
-        try:
-            retry_call(
-                lambda: storage_breaker.call(
-                    lambda: self._client.storage.from_(ATTACHMENT_BUCKET).remove([path])
-                ),
-                mode=GUARDED,
-            )
-        except CircuitOpenError:
-            raise HTTPException(
-                status_code=503,
-                detail="Attachment storage is temporarily unavailable — try again shortly.",
-            ) from None
-        except Exception as e:
-            raise HTTPException(status_code=502, detail=f"Could not remove draft attachment: {e}") from e
+        run(
+            self._database,
+            "DELETE FROM attachments WHERE path = %s",
+            (path,),
+            fetch="none",
+            table="attachments",
+        )
 
     def signed_url(self, path: str, ttl: int = SIGNED_URL_TTL) -> str:
-        storage = self._client.storage.from_(ATTACHMENT_BUCKET)
+        expires = int(time.time()) + self.clamp_ttl(ttl)
+        encoded_path = base64.urlsafe_b64encode(path.encode()).decode().rstrip("=")
+        payload = f"{encoded_path}.{expires}"
+        signature = hmac.new(self._signing_key(), payload.encode(), hashlib.sha256).hexdigest()
+        return f"{DOWNLOAD_PATH}/{payload}.{signature}"
+
+    def read_signed(self, token: str) -> tuple[bytes, str]:
         try:
-            res = retry_call(
-                lambda: storage_breaker.call(
-                    lambda: storage.create_signed_url(path, self.clamp_ttl(ttl))
-                ),
-                mode=READ,
-            )
-        except CircuitOpenError:
+            encoded_path, raw_expires, signature = token.split(".", 2)
+            expires = int(raw_expires)
+            payload = f"{encoded_path}.{expires}"
+            expected = hmac.new(self._signing_key(), payload.encode(), hashlib.sha256).hexdigest()
+            if expires < int(time.time()) or not hmac.compare_digest(signature, expected):
+                raise ValueError
+            padded_path = encoded_path + "=" * (-len(encoded_path) % 4)
+            path = base64.urlsafe_b64decode(padded_path.encode()).decode()
+        except ValueError, UnicodeDecodeError:
             raise HTTPException(
-                status_code=503,
-                detail="Attachment storage is temporarily unavailable — try again shortly.",
+                status_code=404, detail="Attachment link is invalid or expired."
             ) from None
-        except Exception as e:
-            raise HTTPException(status_code=502, detail=f"Could not sign URL: {e}") from e
 
-        url = res.get("signedURL") or res.get("signedUrl") or ""
-        if url and not url.startswith("http"):
-            url = f"{SUPABASE_URL}/storage/v1{url}"
-        return url
-
-    # -- validation exposed for services ------------------------------------
+        row = first_of(
+            self._database,
+            "SELECT data, content_type FROM attachments WHERE path = %s",
+            (path,),
+            table="attachments",
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Attachment not found.")
+        return row["data"], row["content_type"]
 
     @staticmethod
     def check_size(data: bytes) -> None:

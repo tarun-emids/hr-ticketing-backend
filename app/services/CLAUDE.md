@@ -1,6 +1,6 @@
 # CLAUDE.md — services
 
-Business rules only: no Supabase access, no HTTP beyond domain responses.
+Business rules only: no database access, no HTTP beyond domain responses.
 
 ## Contract
 
@@ -37,15 +37,11 @@ Business rules only: no Supabase access, no HTTP beyond domain responses.
   `SLA_SWEEP_INTERVAL_SECONDS`; SLA thresholds "at most once per
   ticket/threshold" are enforced via notification payloads.
 
-## External auth surface (AuthService)
+## Authentication (AuthService)
 
-- `_grant()` deliberately creates a fresh throwaway client per password
-  grant: `sign_in_with_password` stores the USER session on whichever
-  client ran it, and supabase-py would then send that user's JWT on later
-  `.table()` reads. public.users has RLS deny-all, so the service-key
-  singleton must stay clean or reads silently return [] (this was a real
-  bug). Keep the per-grant pattern; never grant on `get_client()`.
-- The grant runs behind `auth_breaker` with `_auth_failure` classification:
-  answered grant errors (status < 500) are NEUTRAL; transport errors and
-  auth 5xx count. `login()` translates `CircuitOpenError` to its own 503
-  before the generic handler can see it.
+- Login loads the account's scrypt password hash through `UserRepository`;
+  never log passwords, hashes, or return `password_hash` in an API response.
+- Use the generic invalid-credentials response for missing users, unprovisioned
+  accounts, and wrong passwords.
+- Password provisioning is an operations script; there is no public signup.
+  PostgreSQL errors pass through the shared database breaker.
