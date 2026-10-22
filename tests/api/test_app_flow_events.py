@@ -2,7 +2,8 @@
 started/completed/failed trio under ``hrdesk.flow`` with the shared request
 id, safe error classification, and never any HR-sensitive content.
 
-Offline everywhere: FakeSupabase (shared conftest), GoTrue grant monkeypatched
+Offline everywhere: SQLite-backed double (shared conftest), password
+verification monkeypatched
 at the module boundary (no network, no tokens), storage handled by FakeStorage.
 """
 import logging
@@ -27,16 +28,14 @@ def _names(records):
 # A. Authentication
 # ---------------------------------------------------------------------------
 
-def _grant_stub(email, password):
-    return types.SimpleNamespace(
-        user=types.SimpleNamespace(email="priya@acme.com", id="auth-user-1")
-    )
+def _verify_stub(password, encoded):
+    return True
 
 
 def test_login_success_emits_operation_events(api, caplog, monkeypatch):
     from app.services import auth_service
 
-    monkeypatch.setattr(auth_service, "_grant", _grant_stub)
+    monkeypatch.setattr(auth_service, "verify_password", _verify_stub)
     with caplog.at_level(logging.INFO, logger="hrdesk.flow"):
         res = api.client.post(
             "/api/auth/login",
@@ -56,20 +55,10 @@ def test_login_success_emits_operation_events(api, caplog, monkeypatch):
 def test_login_failure_classification(api, caplog, monkeypatch):
     from app.services import auth_service
 
-    class _AuthApiErrorStub(Exception):
-        """Duck-typed supabase AuthApiError: raises (like GoTrue does) and
-        carries .message/.status so auth_service classifies it as a grant
-        error and maps it to 401."""
+    def bad_hash(password, encoded_hash):
+        return False  # wrong credentials -> 401 from AuthService
 
-        def __init__(self, message="Invalid login credentials", status=400):
-            super().__init__(message)
-            self.message = message
-            self.status = status
-
-    def bad_grant(email, password):
-        raise _AuthApiErrorStub(status=400)  # GoTrue RAISES on bad credentials
-
-    monkeypatch.setattr(auth_service, "_grant", bad_grant)
+    monkeypatch.setattr(auth_service, "verify_password", bad_hash)
     with caplog.at_level(logging.INFO, logger="hrdesk.flow"):
         res = api.client.post(
             "/api/auth/login",
@@ -80,7 +69,7 @@ def test_login_failure_classification(api, caplog, monkeypatch):
     events = _flow_records(caplog)
     assert _names(events) == ["auth.login.started", "auth.login.failed"]
     failed = events[1]
-    assert failed.http["status"] == 401          # mapped GoTrue failure — safe diagnostic
+    assert failed.http["status"] == 401          # mapped flow failure — safe diagnostic
     assert failed.http["error"] == "HTTPException"
     assert failed.http["request_id"] == "appflow-loginfail1"
     assert "wrong" not in failed.getMessage()
