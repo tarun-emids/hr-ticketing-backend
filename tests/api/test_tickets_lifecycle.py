@@ -29,8 +29,10 @@ def test_second_agent_reply_keeps_first_reply_at(api):
 
 def test_employee_reply_moves_active_ticket_to_waiting_on_employee(api):
     api.client.post(
-        "/api/tickets", json={
-            "employeeId": U["priya"], "category": "Benefits",
+        "/api/tickets",
+        json={
+            "employeeId": U["priya"],
+            "category": "Benefits",
             "subject": "Dental plan covers orthodontics?",
             "description": "Does the new dental plan cover partial orthodontic treatment, and where do I check coverage?",
         },
@@ -90,15 +92,21 @@ def test_close_from_open_stamps_both(api):
 
 
 def test_reopening_clears_resolved_at_and_closed_by(api):
-    api.client.patch("/api/tickets/TKT-101/status", json={"status": "Resolved", "actorId": U["ben"]})
-    api.client.patch("/api/tickets/TKT-101/status", json={"status": "In Progress", "actorId": U["ben"]})
+    api.client.patch(
+        "/api/tickets/TKT-101/status", json={"status": "Resolved", "actorId": U["ben"]}
+    )
+    api.client.patch(
+        "/api/tickets/TKT-101/status", json={"status": "In Progress", "actorId": U["ben"]}
+    )
     t = api.client.get("/api/tickets/TKT-101").json()
     assert t["resolvedAt"] is None
     assert t["closedBy"] is None
 
 
 def test_waiting_on_employee_keeps_timestamps(api):
-    api.client.patch("/api/tickets/TKT-101/status", json={"status": "Resolved", "actorId": U["ben"]})
+    api.client.patch(
+        "/api/tickets/TKT-101/status", json={"status": "Resolved", "actorId": U["ben"]}
+    )
     stamp = api.client.get("/api/tickets/TKT-101").json()["resolvedAt"]
     t = api.client.patch(
         "/api/tickets/TKT-101/status", json={"status": "Waiting on Employee", "actorId": U["ben"]}
@@ -109,7 +117,9 @@ def test_waiting_on_employee_keeps_timestamps(api):
 
 
 def test_status_invalid_value(api):
-    r = api.client.patch("/api/tickets/TKT-101/status", json={"status": "Done", "actorId": U["ben"]})
+    r = api.client.patch(
+        "/api/tickets/TKT-101/status", json={"status": "Done", "actorId": U["ben"]}
+    )
     assert r.status_code == 422
 
 

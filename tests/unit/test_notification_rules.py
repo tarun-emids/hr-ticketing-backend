@@ -1,4 +1,5 @@
 """Pure notification rules: recipients, thresholds, message content."""
+
 from app.services.notification_service import (
     EV_SLA,
     assigned_recipients,
@@ -8,7 +9,6 @@ from app.services.notification_service import (
     sla_threshold_hours,
     status_recipients,
 )
-
 from tests.conftest import U
 
 AGENTS = [U["alicia"], U["ben"], U["ruth"]]

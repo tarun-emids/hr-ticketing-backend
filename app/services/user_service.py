@@ -2,6 +2,7 @@
 src/data/users.js mocks). Serialization happens here (user_out), controllers
 return the lists untouched.
 """
+
 from app.models import CATEGORIES, PRIORITIES, STATUSES, user_out
 from app.repositories.user_repository import UserRepository
 

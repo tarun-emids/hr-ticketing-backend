@@ -1,4 +1,5 @@
 """Users + static meta endpoints."""
+
 from fastapi import APIRouter, Depends
 
 from app.deps import get_user_service

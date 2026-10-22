@@ -10,6 +10,7 @@ retry policy (app/retries.py): signing is a replayable read; upload/remove
 retry only when the request provably never left the client (guarded) —
 storage PUTs replayed after an ambiguous failure could duplicate objects.
 """
+
 from fastapi import HTTPException
 
 from app.config import ATTACHMENT_BUCKET, MAX_ATTACHMENT_BYTES, SIGNED_URL_TTL, SUPABASE_URL
@@ -49,9 +50,9 @@ class AttachmentStorageRepository:
             raise HTTPException(
                 status_code=503,
                 detail="Attachment storage is temporarily unavailable — try again shortly.",
-            )
+            ) from None
         except Exception as e:  # storage3 raises generic StorageException
-            raise HTTPException(status_code=502, detail=f"Storage upload failed: {e}")
+            raise HTTPException(status_code=502, detail=f"Storage upload failed: {e}") from e
 
     def remove(self, path: str) -> None:
         try:
@@ -65,9 +66,9 @@ class AttachmentStorageRepository:
             raise HTTPException(
                 status_code=503,
                 detail="Attachment storage is temporarily unavailable — try again shortly.",
-            )
+            ) from None
         except Exception as e:
-            raise HTTPException(status_code=502, detail=f"Could not remove draft attachment: {e}")
+            raise HTTPException(status_code=502, detail=f"Could not remove draft attachment: {e}") from e
 
     def signed_url(self, path: str, ttl: int = SIGNED_URL_TTL) -> str:
         storage = self._client.storage.from_(ATTACHMENT_BUCKET)
@@ -82,9 +83,9 @@ class AttachmentStorageRepository:
             raise HTTPException(
                 status_code=503,
                 detail="Attachment storage is temporarily unavailable — try again shortly.",
-            )
+            ) from None
         except Exception as e:
-            raise HTTPException(status_code=502, detail=f"Could not sign URL: {e}")
+            raise HTTPException(status_code=502, detail=f"Could not sign URL: {e}") from e
 
         url = res.get("signedURL") or res.get("signedUrl") or ""
         if url and not url.startswith("http"):

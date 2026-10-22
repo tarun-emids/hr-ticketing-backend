@@ -13,6 +13,7 @@ Design guardrails (see §4/§5 of the observability spec):
   logged on our side and still return 202 (logging must never break
   ticket flows, including this one).
 """
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app.deps import get_log_ingest_service
@@ -23,9 +24,11 @@ router = APIRouter(prefix="/logs", tags=["logs"])
 
 
 @router.post("/ingest", status_code=202)
-def ingest_frontend_events(payload: LogIngestRequest,
-                           request: Request,
-                           svc: LogIngestService = Depends(get_log_ingest_service)):
+def ingest_frontend_events(
+    payload: LogIngestRequest,
+    request: Request,
+    svc: LogIngestService = Depends(get_log_ingest_service),
+):
     """Accept 1..20 validated frontend log events; writes to the shared log."""
     client_ip = request.client.host if request.client else "unknown"
     if not svc.allow(client_ip):

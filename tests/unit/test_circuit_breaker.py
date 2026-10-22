@@ -45,9 +45,12 @@ def test_neutral_outcome_never_counts():
     assert brk.snapshot() == {"name": "t", "state": CLOSED, "failures": 0}
 
 
+
 def test_success_resets_failure_counter():
     brk = CircuitBreaker("t", failure_threshold=3, recovery_timeout=60.0)
-    raise_exc = lambda: (_ for _ in ()).throw(RuntimeError("down"))
+
+    def raise_exc():
+        raise RuntimeError("down")
 
     for _ in range(2):
         with pytest.raises(RuntimeError):
@@ -59,12 +62,14 @@ def test_success_resets_failure_counter():
         with pytest.raises(RuntimeError):
             brk.call(raise_exc, is_failure=always_down)
 
-    # only 2 consecutive since the last success — still closed
+    # Only 2 consecutive failures since the last success — still closed
     assert brk.snapshot()["state"] == CLOSED
 
     with pytest.raises(RuntimeError):
         brk.call(raise_exc, is_failure=always_down)
+
     assert brk.snapshot()["state"] == OPEN
+
 
 
 def test_open_circuit_fails_fast_without_calling_the_dependency():
@@ -165,6 +170,7 @@ def test_reset_reopens_business_as_usual():
 # run() integration: real module-level db breaker + the PostgREST error classes
 # it must distinguish (constraint violations are caller errors, never outages)
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture(autouse=True)
 def _fresh_db_breaker():

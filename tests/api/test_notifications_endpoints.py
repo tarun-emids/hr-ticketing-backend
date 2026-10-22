@@ -1,4 +1,5 @@
 """Notifications API: flows, isolation, pagination, failure isolation."""
+
 from datetime import datetime, timedelta, timezone
 
 from tests.conftest import U
@@ -11,7 +12,9 @@ def list_for(api, uid, **params):
 
 
 def unread_of(api, uid):
-    return api.client.get("/api/notifications/unread-count", params={"userId": uid}).json()["unread"]
+    return api.client.get("/api/notifications/unread-count", params={"userId": uid}).json()[
+        "unread"
+    ]
 
 
 def create_employee_ticket(api, employee, **over):
@@ -55,8 +58,7 @@ def test_employee_reply_on_unassigned_ticket_reaches_all_agents(api):
 
     for agent in AGENTS:
         rows = [
-            n for n in list_for(api, agent)
-            if n["ticketRef"] == ref and n["type"] == "ticket_reply"
+            n for n in list_for(api, agent) if n["ticketRef"] == ref and n["type"] == "ticket_reply"
         ]
         assert len(rows) == 1
     assert list_for(api, U["priya"]) == []  # author never self-notified
@@ -73,7 +75,11 @@ def test_agent_reply_notifies_owner_only(api):
     rows = [n for n in list_for(api, U["marcus"]) if n["ticketRef"] == ref]
     assert [n["type"] for n in rows] == ["ticket_reply"]
     assert "Alicia" in rows[0]["message"]
-    assert [n for n in list_for(api, U["alicia"]) if n["ticketRef"] == ref and n["type"] == "ticket_reply"] == []
+    assert [
+        n
+        for n in list_for(api, U["alicia"])
+        if n["ticketRef"] == ref and n["type"] == "ticket_reply"
+    ] == []
 
 
 def test_assignment_notifies_assignee_only_on_change(api):
@@ -92,7 +98,9 @@ def test_assignment_notifies_assignee_only_on_change(api):
 
 def test_status_change_excludes_actor_and_third_parties(api):
     ref = "TKT-103"  # Dana's ticket, assigned to Ben
-    r = api.client.patch(f"/api/tickets/{ref}/status", json={"status": "Resolved", "actorId": U["ben"]})
+    r = api.client.patch(
+        f"/api/tickets/{ref}/status", json={"status": "Resolved", "actorId": U["ben"]}
+    )
     assert r.status_code == 200
 
     dana_rows = [n for n in list_for(api, U["dana"]) if n["ticketRef"] == ref]
@@ -120,7 +128,9 @@ def test_draft_submit_notifies_agents(api):
     ref = r.json()["id"]
 
     for agent in AGENTS:
-        assert [n["type"] for n in list_for(api, agent) if n["ticketRef"] == ref] == ["ticket_created"]
+        assert [n["type"] for n in list_for(api, agent) if n["ticketRef"] == ref] == [
+            "ticket_created"
+        ]
 
 
 def test_unread_count_read_one_and_read_all(api):
@@ -176,14 +186,29 @@ def test_pagination_and_state_filter(api):
     assert len(unread_page) == 3
     api.client.post("/api/notifications/read-all", json={"userId": U["ruth"]})
     assert list_for(api, U["ruth"], state="unread") == []
-    assert len(list_for(api, U["ruth"]) ) == 3  # read ones still listed in 'all'
+    assert len(list_for(api, U["ruth"])) == 3  # read ones still listed in 'all'
 
 
 def test_endpoint_validation(api):
-    assert api.client.get("/api/notifications", params={"userId": "no-such-user"}).status_code == 422
-    assert api.client.get("/api/notifications", params={"userId": U["ben"], "state": "bogus"}).status_code == 422
-    assert api.client.get("/api/notifications", params={"userId": U["ben"], "limit": 0}).status_code == 422
-    assert api.client.get("/api/notifications/unread-count", params={"userId": "no-such-user"}).status_code == 422
+    assert (
+        api.client.get("/api/notifications", params={"userId": "no-such-user"}).status_code == 422
+    )
+    assert (
+        api.client.get(
+            "/api/notifications", params={"userId": U["ben"], "state": "bogus"}
+        ).status_code
+        == 422
+    )
+    assert (
+        api.client.get("/api/notifications", params={"userId": U["ben"], "limit": 0}).status_code
+        == 422
+    )
+    assert (
+        api.client.get(
+            "/api/notifications/unread-count", params={"userId": "no-such-user"}
+        ).status_code
+        == 422
+    )
 
 
 def test_notification_failure_never_blocks_ticket_write(api, monkeypatch):
@@ -204,12 +229,23 @@ def _age(hours: float) -> str:
 def _ticket_row(ref, priority, hours_old, seq):
     return {
         "id": f"00000000-0000-0000-0000-7{seq:011d}",
-        "number": 900 + seq, "ref": ref, "employee_id": U["priya"], "category": "Other",
-        "subject": f"{ref} snapshot", "description": "Unassigned snapshot used by the sweep test.",
-        "priority": priority, "status": "Open", "assignee_id": None,
-        "created_at": _age(hours_old), "updated_at": _age(hours_old),
-        "first_reply_at": None, "resolved_at": None, "closed_by": None,
-        "attachment_path": None, "attachment_name": None, "attachment_size": None,
+        "number": 900 + seq,
+        "ref": ref,
+        "employee_id": U["priya"],
+        "category": "Other",
+        "subject": f"{ref} snapshot",
+        "description": "Unassigned snapshot used by the sweep test.",
+        "priority": priority,
+        "status": "Open",
+        "assignee_id": None,
+        "created_at": _age(hours_old),
+        "updated_at": _age(hours_old),
+        "first_reply_at": None,
+        "resolved_at": None,
+        "closed_by": None,
+        "attachment_path": None,
+        "attachment_name": None,
+        "attachment_size": None,
     }
 
 
@@ -235,7 +271,10 @@ def test_sla_sweep_notifies_once_per_threshold(api):
     assert [n for n in list_for(api, U["priya"]) if n["ticketRef"] == "TKT-900"] == []
 
     # second sweep: ticket/threshold already notified -> no new rows
-    assert api.client.post("/api/notifications/sweep", json={"userId": U["ben"]}).json()["slaNotified"] == 0
+    assert (
+        api.client.post("/api/notifications/sweep", json={"userId": U["ben"]}).json()["slaNotified"]
+        == 0
+    )
 
 
 def test_urgent_threshold_is_shorter(api):
@@ -251,24 +290,45 @@ def test_urgent_threshold_is_shorter(api):
 def test_retention_cleanup_deletes_stale_rows(api):
     too_old_read = {
         "id": "00000000-0000-0000-0000-800000000001",
-        "recipient_id": U["ben"], "ticket_id": None, "ticket_ref": None,
-        "type": "ticket_created", "channel": "in_app", "actor_name": None,
-        "payload": {}, "message": "old read copy", "read": True,
-        "created_at": _age(24 * 60), "read_at": _age(24 * 30),
+        "recipient_id": U["ben"],
+        "ticket_id": None,
+        "ticket_ref": None,
+        "type": "ticket_created",
+        "channel": "in_app",
+        "actor_name": None,
+        "payload": {},
+        "message": "old read copy",
+        "read": True,
+        "created_at": _age(24 * 60),
+        "read_at": _age(24 * 30),
     }
     fresh_unread = {
         "id": "00000000-0000-0000-0000-800000000002",
-        "recipient_id": U["ben"], "ticket_id": None, "ticket_ref": None,
-        "type": "ticket_created", "channel": "in_app", "actor_name": None,
-        "payload": {}, "message": "fresh unread", "read": False,
-        "created_at": _age(24 * 35), "read_at": None,
+        "recipient_id": U["ben"],
+        "ticket_id": None,
+        "ticket_ref": None,
+        "type": "ticket_created",
+        "channel": "in_app",
+        "actor_name": None,
+        "payload": {},
+        "message": "fresh unread",
+        "read": False,
+        "created_at": _age(24 * 35),
+        "read_at": None,
     }
     ancient_unread = {
         "id": "00000000-0000-0000-0000-800000000003",
-        "recipient_id": U["ben"], "ticket_id": None, "ticket_ref": None,
-        "type": "ticket_created", "channel": "in_app", "actor_name": None,
-        "payload": {}, "message": "ancient unread", "read": False,
-        "created_at": _age(24 * 200), "read_at": None,
+        "recipient_id": U["ben"],
+        "ticket_id": None,
+        "ticket_ref": None,
+        "type": "ticket_created",
+        "channel": "in_app",
+        "actor_name": None,
+        "payload": {},
+        "message": "ancient unread",
+        "read": False,
+        "created_at": _age(24 * 200),
+        "read_at": None,
     }
     api.fake.notifications.rows.extend([too_old_read, fresh_unread, ancient_unread])
 
@@ -276,7 +336,8 @@ def test_retention_cleanup_deletes_stale_rows(api):
     assert r.json()["deleted"] == 2
 
     surviving_ids = {
-        n["id"] for n in api.fake.notifications.rows
+        n["id"]
+        for n in api.fake.notifications.rows
         if n["id"] in {too_old_read["id"], fresh_unread["id"], ancient_unread["id"]}
     }
     assert surviving_ids == {fresh_unread["id"]}

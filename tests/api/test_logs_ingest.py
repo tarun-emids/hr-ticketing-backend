@@ -4,9 +4,8 @@ Runs hermetically: the shared conftest fixture wires FakeSupabase; ingestion
 doesn't touch Supabase at all — events go through the standard logging
 chain like every backend record (asserted via caplog, LOG_TO_FILE=false).
 """
-import logging
 
-from fastapi.testclient import TestClient
+import logging
 
 _ingest = "/api/logs/ingest"
 
@@ -32,7 +31,10 @@ def _post(api, batch):
 
 def test_ingest_accepts_valid_batch_and_logs_through_pipeline(api, caplog):
     with caplog.at_level(logging.INFO, logger="hrdesk.frontend"):
-        res = _post(api, [_event(), _event(event="http_request_succeeded", statusCode=201, durationMs=512.5)])
+        res = _post(
+            api,
+            [_event(), _event(event="http_request_succeeded", statusCode=201, durationMs=512.5)],
+        )
     assert res.status_code == 202
     assert res.json() == {"accepted": 2}
     records = [r for r in caplog.records if r.name == "hrdesk.frontend"]
@@ -60,9 +62,9 @@ def test_ingest_rejects_oversized_batch_and_bad_fields(api):
 
 
 def test_ingest_is_rate_limited_per_client(api, monkeypatch):
-    from app.services import log_ingest_service as svc_mod
-
     import time
+
+    from app.services import log_ingest_service as svc_mod
 
     monkeypatch.setattr(svc_mod.time, "monotonic", time.monotonic)
     hits = svc_mod._RATE_HITS.setdefault("testclient", [])

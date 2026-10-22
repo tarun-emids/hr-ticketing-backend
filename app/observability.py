@@ -33,6 +33,7 @@ format and regenerated when invalid — an attacker cannot inject log
 content through ``X-Request-ID``. Attributes allowed in spans: ticket
 ref, status, category, priority, user UUIDs, counts.
 """
+
 import contextvars
 import json
 import logging
@@ -81,10 +82,9 @@ def _redact_sensitive(text: str) -> str:
     """Mask `name=value` query parameters whose name matches the denylist."""
     return _SENSITIVE_PARAM_RE.sub(lambda m: f"{m.group(1)}=[REDACTED]", text)
 
+
 # Per-request correlation context (safe across async request handling).
-_request_id_var: contextvars.ContextVar = contextvars.ContextVar(
-    "hrdesk_request_id", default=None
-)
+_request_id_var: contextvars.ContextVar = contextvars.ContextVar("hrdesk_request_id", default=None)
 
 
 def new_request_id() -> str:
@@ -118,6 +118,7 @@ def get_logger(name: str = LOGGER_NAME) -> logging.Logger:
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
+
 
 def _current_span_ids():
     """(trace_id, span_id) of the active span, else (None, None)."""
@@ -254,6 +255,7 @@ def setup_logging() -> None:
 # Tracing
 # ---------------------------------------------------------------------------
 
+
 def _spans_endpoint() -> str:
     """OTLPSpanExporter uses its endpoint argument verbatim (unlike env-var
     configuration, which appends the signal path itself) — normalise both
@@ -363,6 +365,7 @@ def record_error_on_current_span(exc: Exception) -> None:
 # Request logging middleware (pure ASGI — no BaseHTTPMiddleware buffering)
 # ---------------------------------------------------------------------------
 
+
 class RequestLogMiddleware:
     """Request-id plumbing + one structured line per HTTP request.
 
@@ -448,8 +451,11 @@ class RequestLogMiddleware:
                 self.logger.info(
                     f"{scope['method']} {scope['path']} -> "
                     f"{status if status is not None else '?'} in {duration_ms}ms",
-                    extra={"http": self._fields(scope, status, start,
-                                                duration_ms, request_id=request_id)},
+                    extra={
+                        "http": self._fields(
+                            scope, status, start, duration_ms, request_id=request_id
+                        )
+                    },
                 )
         finally:
             _request_id_var.reset(token)

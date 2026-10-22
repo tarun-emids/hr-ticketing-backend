@@ -7,6 +7,7 @@ The client is resolved here via `app.config.get_client()` at call time
 `app.config.get_client` to inject the offline FakeSupabase for every request
 and every repository in one place.
 """
+
 from fastapi import Depends
 
 from app import config as app_config
@@ -32,6 +33,7 @@ def get_supabase():
 
 
 # -- repositories ---------------------------------------------------------
+
 
 def get_user_repo(client=Depends(get_supabase)) -> UserRepository:
     return UserRepository(client)
@@ -62,6 +64,7 @@ def get_kb_storage(client=Depends(get_supabase)) -> KbStorageRepository:
 
 
 # -- services ---------------------------------------------------------------
+
 
 def get_notification_service(
     notifications: NotificationRepository = Depends(get_notification_repo),

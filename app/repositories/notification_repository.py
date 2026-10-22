@@ -4,6 +4,7 @@ Channel-agnostic store (channel='in_app' today) for in-app notifications.
 All isolation is enforced here: list/mark methods only ever touch rows whose
 recipient_id matches the acting user.
 """
+
 from app.repositories.base import SupabaseRepository, rows_of, run
 
 
@@ -35,9 +36,7 @@ class NotificationRepository(SupabaseRepository):
         return rows_of(query)[offset:]
 
     def unread_rows(self, user_id: str) -> list[dict]:
-        return rows_of(
-            self.table().select("id").eq("recipient_id", user_id).eq("read", False)
-        )
+        return rows_of(self.table().select("id").eq("recipient_id", user_id).eq("read", False))
 
     # -- reads (background jobs) -------------------------------------------
 
@@ -50,9 +49,7 @@ class NotificationRepository(SupabaseRepository):
         return {p.get("payload", {}).get("thresholdHours") for p in prior}
 
     def ids_of_read_older_than(self, iso_cutoff: str) -> list[dict]:
-        return rows_of(
-            self.table().select("id").eq("read", True).lt("created_at", iso_cutoff)
-        )
+        return rows_of(self.table().select("id").eq("read", True).lt("created_at", iso_cutoff))
 
     def ids_of_any_older_than(self, iso_cutoff: str) -> list[dict]:
         return rows_of(self.table().select("id").lt("created_at", iso_cutoff))

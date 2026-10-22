@@ -8,6 +8,7 @@ API layer can be dropped in without touching UI code.
 (The agent pickup reply text moved to services/ticket_service.py — it is a
 domain message, not a schema concern.)
 """
+
 from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -46,7 +47,9 @@ class DraftCreate(CamelModel):
 
 
 class DraftUpdate(CamelModel):
-    category: Optional[Literal["Payroll", "Leave", "Benefits", "Onboarding", "Policy", "Other"]] = None
+    category: Optional[Literal["Payroll", "Leave", "Benefits", "Onboarding", "Policy", "Other"]] = (
+        None
+    )
     subject: Optional[str] = Field(default=None, max_length=200)
     description: Optional[str] = Field(default=None, max_length=10_000)
     priority: Optional[Literal["Low", "Medium", "High", "Urgent"]] = None
@@ -63,6 +66,7 @@ class ReplyCreate(CamelModel):
 
 class NotificationRead(CamelModel):
     """Acting user for notification reads (mock-auth stand-in for a token)."""
+
     user_id: str
 
 
@@ -114,6 +118,7 @@ class LogIngestRequest(CamelModel):
 # ---------------------------------------------------------------------------
 # Serializers (Supabase row -> API/frontend shape)
 # ---------------------------------------------------------------------------
+
 
 def turn_out(r: dict) -> dict:
     return {

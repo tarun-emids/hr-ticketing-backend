@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
-from app.resilience import CircuitBreaker, CLOSED, OPEN
+from app.resilience import CLOSED, OPEN, CircuitBreaker
 from app.services import auth_service as asvc
 
 

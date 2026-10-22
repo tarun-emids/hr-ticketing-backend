@@ -14,6 +14,7 @@ Supabase surface (GoTrue). The throwaway per-grant client lives in _grant()
 with the rationale below; account resolution goes through the injected
 UserRepository (service-key backed, RLS bypassed).
 """
+
 import re
 from typing import Any
 
@@ -21,9 +22,9 @@ from fastapi import HTTPException
 
 from app.config import SERVICE_KEY, SUPABASE_URL
 from app.models import user_out
-from app.resilience import auth_breaker, CircuitOpenError
 from app.repositories.user_repository import UserRepository
 from app.retries import GUARDED, retry_call
+from app.resilience import CircuitOpenError, auth_breaker
 
 
 def _load_auth_api_error():
@@ -69,7 +70,7 @@ def _grant_status(e: BaseException) -> int:
     raw = getattr(e, "status", None) or getattr(e, "code", None) or 400
     try:
         return int(raw)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return 400
 
 
@@ -182,7 +183,7 @@ class AuthService:
             raise HTTPException(
                 status_code=503,
                 detail="Authentication service is temporarily unavailable — try again shortly.",
-            )
+            ) from None
         except Exception as e:
             if not _is_grant_error(e):
                 raise HTTPException(
@@ -195,19 +196,19 @@ class AuthService:
                 raise HTTPException(
                     status_code=403,
                     detail="Email not confirmed yet — contact HR/IT to activate this account.",
-                )
+                ) from e
             if status in (400, 401):
                 # GoTrue's message for wrong credentials is already generic across
                 # versions; normalise everything a bad grant can return to one line.
-                raise HTTPException(status_code=401, detail="Invalid email or password.")
+                raise HTTPException(status_code=401, detail="Invalid email or password.") from e
             if status == 422:
                 raise HTTPException(
                     status_code=400, detail="That doesn't look like a valid email address."
-                )
+                ) from e
             raise HTTPException(
                 status_code=502,
                 detail="Authentication service is unavailable — try again shortly.",
-            )
+            ) from e
 
         # Account resolution is server-to-server with the service role key
         # (get_client() is never used for a sign-in, so its reads stay clean).

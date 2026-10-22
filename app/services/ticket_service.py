@@ -12,6 +12,7 @@ Mirrors src/data/store.js 1:1 (same rules the frontend mock enforces):
 - auto-assign routes to the least-loaded agent (open count, total as
   tiebreak). Pure counting — no AI, no scoring, fully inspectable.
 """
+
 import os
 import uuid as uuidlib
 from datetime import datetime, timezone
@@ -38,9 +39,7 @@ from app.services.notification_service import (
 
 ACTIVE_STATUSES = ("Open", "In Progress", "Waiting on Employee")
 
-AGENT_PICKUP_TEXT = (
-    "Thanks for raising this — I've picked it up and will get back to you shortly."
-)
+AGENT_PICKUP_TEXT = "Thanks for raising this — I've picked it up and will get back to you shortly."
 
 
 class TicketNotFound(HTTPException):
@@ -152,8 +151,9 @@ class TicketService:
 
     # -- create -------------------------------------------------------------
 
-    def create(self, *, employee_id: str, category: str, subject: str,
-               description: str, priority: str) -> dict:
+    def create(
+        self, *, employee_id: str, category: str, subject: str, description: str, priority: str
+    ) -> dict:
         """POST /tickets — create a ticket (guards: employee exists + role check)."""
         employee = self._users.get_by_id(employee_id)
         if not employee:
@@ -194,12 +194,14 @@ class TicketService:
         role = author["role"]
 
         now = self._now()
-        self._tickets.insert_reply({
-            "ticket_id": row["id"],
-            "author_id": author_id,
-            "author_role": role,
-            "body": text.strip(),
-        })
+        self._tickets.insert_reply(
+            {
+                "ticket_id": row["id"],
+                "author_id": author_id,
+                "author_role": role,
+                "body": text.strip(),
+            }
+        )
 
         patch: dict = {}
         if role == "agent":
@@ -217,8 +219,11 @@ class TicketService:
             EV_REPLY,
             author,
             reply_recipients(
-                row["employee_id"], row.get("assignee_id"),
-                author["id"], author["role"], self._notifier.agent_ids(),
+                row["employee_id"],
+                row.get("assignee_id"),
+                author["id"],
+                author["role"],
+                self._notifier.agent_ids(),
             ),
         )
         return self._full(tid)
@@ -282,12 +287,14 @@ class TicketService:
 
         now = self._now()
         if assignee_id and not row.get("first_reply_at") and not has_agent_turn:
-            self._tickets.insert_reply({
-                "ticket_id": row["id"],
-                "author_id": assignee_id,
-                "author_role": "agent",
-                "body": AGENT_PICKUP_TEXT,
-            })
+            self._tickets.insert_reply(
+                {
+                    "ticket_id": row["id"],
+                    "author_id": assignee_id,
+                    "author_role": "agent",
+                    "body": AGENT_PICKUP_TEXT,
+                }
+            )
             patch: dict = {"assignee_id": assignee_id, "first_reply_at": now}
             if row["status"] == "Open":
                 patch["status"] = "In Progress"
@@ -325,8 +332,9 @@ class TicketService:
 
     # -- attachments ---------------------------------------------------------
 
-    def upload_attachment(self, tid: str, *, filename: str | None,
-                          content_type: str | None, data: bytes) -> dict:
+    def upload_attachment(
+        self, tid: str, *, filename: str | None, content_type: str | None, data: bytes
+    ) -> dict:
         """POST /tickets/{id}/attachment — one file per ticket (re-upload
         replaces the previous attachment), <=5 MB."""
         if not filename:
@@ -339,11 +347,14 @@ class TicketService:
         path = f"{row['ref']}/{uuidlib.uuid4().hex}{ext}"
         self._storage.upload(path, data, content_type)
 
-        return self._patch_and_return(tid, {
-            "attachment_path": path,
-            "attachment_name": filename,
-            "attachment_size": len(data),
-        })
+        return self._patch_and_return(
+            tid,
+            {
+                "attachment_path": path,
+                "attachment_name": filename,
+                "attachment_size": len(data),
+            },
+        )
 
     def attachment_url(self, tid: str, ttl: int) -> dict:
         """GET /tickets/{id}/attachment — short-lived signed URL for the file."""

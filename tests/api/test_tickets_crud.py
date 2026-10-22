@@ -17,15 +17,29 @@ def test_create_ticket_returns_frontend_shape(api):
     assert t["assigneeId"] is None
     assert t["turns"] == []
     assert set(t.keys()) == {
-        "id", "uuid", "employeeId", "category", "subject", "description",
-        "priority", "status", "assigneeId", "createdAt", "updatedAt",
-        "firstReplyAt", "resolvedAt", "closedBy", "turns", "attachment",
+        "id",
+        "uuid",
+        "employeeId",
+        "category",
+        "subject",
+        "description",
+        "priority",
+        "status",
+        "assigneeId",
+        "createdAt",
+        "updatedAt",
+        "firstReplyAt",
+        "resolvedAt",
+        "closedBy",
+        "turns",
+        "attachment",
     }
 
 
 def test_create_ticket_strips_whitespace(api):
     payload = ticket_payload(
-        U["priya"], subject="   needs new keyboard  ",
+        U["priya"],
+        subject="   needs new keyboard  ",
         description="My keyboard keys W, A, S and D stopped responding this week.",
     )
     r = api.client.post("/api/tickets", json=payload)

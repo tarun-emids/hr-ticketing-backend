@@ -19,6 +19,7 @@ outbound-call policy in one place:
       around
     span (app/observability.py — db.postgrest.<table>.<op>)
 """
+
 import re
 from typing import Any, Optional
 
@@ -29,7 +30,9 @@ from app.observability import db_span
 from app.resilience import db_breaker, CircuitOpenError
 from app.retries import classify_mode, retry_call
 
-UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+UUID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
 
 
 def _db_failure(e: BaseException) -> bool:
@@ -107,7 +110,7 @@ def run(q):
         raise HTTPException(
             status_code=503,
             detail="Database is temporarily unavailable — try again shortly.",
-        )
+        ) from None
     except APIError as e:
         detail = getattr(e, "message", None) or str(e)
         code = str(getattr(e, "code", "") or "")
@@ -115,7 +118,8 @@ def run(q):
         raise HTTPException(
             status_code=status,
             detail=f"Database rejected the write: {detail}",
-        )
+        ) from e
+
 
 def rows_of(q) -> list:
     data = run(q)
