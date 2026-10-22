@@ -92,9 +92,16 @@ class CategoryUpdate(CamelModel):
 # browser payloads never reach the logging system. Batches are small and
 # every free-form field is length-capped; the server re-stamps its own ids
 # and timestamps (see services/log_ingest_service.py).
+#
+# trace_id/span_id: the ORIGINAL browser operation's trace context (from the
+# frontend's own OTel SDK span), strict lowercase hex per the W3C traceparent
+# format. Optional — events without tracing enabled omit them, and the
+# ingest service stamps them only as a complete pair.
 # ---------------------------------------------------------------------------
 
 _ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_.-]{7,63}$"
+_W3C_TRACE_ID_PATTERN = r"^[0-9a-f]{32}$"
+_W3C_SPAN_ID_PATTERN = r"^[0-9a-f]{16}$"
 
 
 class FrontendLogEvent(CamelModel):
@@ -106,6 +113,8 @@ class FrontendLogEvent(CamelModel):
     endpoint: Optional[str] = Field(default=None, max_length=200)
     status_code: Optional[int] = Field(default=None, ge=100, le=599)
     duration_ms: Optional[float] = Field(default=None, ge=0, le=120_000)
+    trace_id: Optional[str] = Field(default=None, pattern=_W3C_TRACE_ID_PATTERN, max_length=64)
+    span_id: Optional[str] = Field(default=None, pattern=_W3C_SPAN_ID_PATTERN, max_length=64)
     occurred_at: str = Field(min_length=10, max_length=40)
 
 

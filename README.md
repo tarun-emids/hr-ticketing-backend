@@ -15,6 +15,7 @@ app/
   main.py                 # FastAPI wiring: controllers, lifespan, exception handler
   models.py               # request DTOs (pydantic) + row -> camelCase serializers
   deps.py                 # DI graph:  controller --Depends--> service --> repository --> client
+  observability.py        # structured logging, correlation ids, tracing, flow_operation
   controllers/            # request handling only — parse, call a service, return
     auth.py               #   POST /api/auth/login
     tickets.py            #   /api/tickets CRUD + actions + auto-assign + /api/agents/workload
@@ -22,13 +23,15 @@ app/
     drafts.py             #   /api/drafts CRUD + submit + attachments
     notifications.py      #   /api/notifications list/read/read-all/sweep
     users.py              #   /api/users, /api/users/agents, /api/meta
+    logs.py               #   POST /api/logs/ingest (frontend events → app.log)
     knowledge_base.py     #   /api/kb list + search, /{slug} metadata, /{slug}/file signed PDF
   services/               # business rules — no HTTP, no database specifics
     ticket_service.py     #   create/list/get/replies, status/priority/category, assign, auto-assign, workload
     draft_service.py      #   draft CRUD, submit validation, attachment swap
-    notification_service.py  # pure recipient/message rules + emit + SLA sweep + retention jobs
+    notification_service.py  # recipient rules + emit + SLA sweep + retention jobs
     user_service.py       #   directory lists + static meta
     auth_service.py       #   GoTrue password grant + account join
+    log_ingest_service.py #   validated frontend events → the shared log
     kb_service.py         #   role pools, weighted search, visibility gates (§12)
   repositories/           # the ONLY layer that touches Supabase
     base.py               #   unwrap/run/rows_of/first_of + SupabaseRepository base (retry-injected)
@@ -154,6 +157,7 @@ with its thread (`turns`), or 404 if missing.
 | `assignTicket(id, assigneeId)` | `PATCH /api/tickets/{id}/assignee` (`{ assigneeId: uuid|null }`) |
 | `setPriority(id, priority)` | `PATCH /api/tickets/{id}/priority` |
 | `setCategory(id, category)` | `PATCH /api/tickets/{id}/category` |
+| `frontend logger.js` | `POST /api/logs/ingest` (browser events into the same log file) |
 | `USERS` / `HR_AGENTS` / lookups | `GET /api/users`, `GET /api/users/agents`, `GET /api/meta` |
 | (attachment file) | `POST /api/tickets/{id}/attachment` (multipart `file`), `GET /api/tickets/{id}/attachment` (signed URL) |
 
@@ -308,7 +312,7 @@ The SLA sweep/interval constants (`SLA_THRESHOLDS_HOURS`, `SLA_SWEEP_INTERVAL_SE
 
 ```bash
 cd backend && .venv/bin/activate
-pytest            # offline: FastSupabase fake, no network (integration is excluded)
+pytest            # offline: FakeSupabase fake, no network (integration is excluded)
 pytest -m integration   # live round-trips against the real project
 ```
 
@@ -373,111 +377,158 @@ received on the half-open probe is evidence of life and closes the circuit.
   `run()` classification), `tests/unit/test_auth_breaker.py`,
   `tests/api/test_breakers.py` (fail-fast through real endpoints,
   `/health/deps`, surface independence).
+## 12. Observability — logging, correlation, tracing
 
-## 12. Knowledge base (policy library)
+### 12.1 The ID model (what joins what)
 
-Employees search HR policy documents and open (view) or download the PDF.
-Files live in the **private `knowledge-base` storage bucket** at
-`pdf/<kb-ref>-<slug>.pdf`; only short-lived signed URLs are ever handed to a
-browser, always minted behind the same visibility gate. Document metadata
-(tags, search blob, page count, version, effective date) lives in the
-`kb_documents` table — schema.sql **section 9/10**, idempotent like the rest.
+| ID | Produced by | Purpose |
+| --- | --- | --- |
+| `request_id` (== frontend `correlationId`) | frontend `client.js` per API operation; backend accepts it via `X-Request-ID` only in a strict `^[A-Za-z0-9][A-Za-z0-9_.-]{7,63}$` format, otherwise generates a fresh UUID. Echoed on every response as `X-Request-ID` (CORS-exposed). | THE log join key. Stamped on **every** record emitted **within** that HTTP request (middleware, flow events, httpx lines, notification deliveries) via the request context var. |
+| `trace_id` / `span_id` | OpenTelemetry SDK. Browser: real spans from `@opentelemetry/sdk-trace-web` (`frontend/src/api/trace.js`) — ids are never fabricated; the `traceparent` header is injected by the W3C propagator. Backend: FastAPI instrumentation continues the same trace; httpx client spans (Supabase REST/Storage/Auth) and `db.postgrest.*` spans nest under it. | Distributed tracing in Jaeger (browser → backend → Supabase hops). NOT the same concept as `request_id`. |
+| `run_id` | `new_run_id()` (uuid4) — background jobs only (SLA sweep / retention). Jobs have no HTTP request context, so they carry a run id — never a fabricated request_id. | Correlates one scheduled sweep across all its records (`job.sla_sweep.*`). |
+| `log_id` | per JSON log record, at format time | unique per record, never a correlation key |
+| `frontend_log_id` (`event.logId`) | frontend `logger.js` per event | unique per ingested browser event |
 
-### Visibility — resolved from the account row, never from the request
+Flow snapshot (every request also gets the middleware line + httpx rows; `hrdesk`
+logs lifecycle lines, the notifications logger logs job failures with tracebacks):
 
-The acting user only sends `viewerId` (the account id from real login; the
-role that matters is re-resolved server-side from `public.users`). The
-server derives the document pools the role may read:
-
-| Role | Pools readable |
-| --- | --- |
-| `employee` | `employee` (public-facing policies) |
-| `agent` (HR) | `employee` **and** `hr` — HR answers employee questions, so agents see the public policies too; this is also the admin tier of the system |
-| unknown role | nothing |
-
-An out-of-pool document answers **403** (it exists but is not for you);
-an unknown slug answers **404**; metadata and the file URL pass the same
-gate, so a signed link can never be minted for a document the viewer may
-not read.
-
-### Endpoints
-
-| Call | Behaviour |
-| --- | --- |
-| `GET /api/kb?viewerId=&q=` | catalogue page (50) or — with `q` — top-N scored matches (default 3) |
-| `GET /api/kb/popular?viewerId=` | 8 most recently refreshed docs in the viewer's pools (dashboard strip) |
-| `GET /api/kb/{slug}?viewerId=` | document metadata; 403 out of pool, 404 unknown |
-| `GET /api/kb/{slug}/file?viewerId=[&ttl=][&download=true]` | signed PDF URL (default 1 h). Default returns an **inline view** link; `download=true` returns an **attachment-disposition** link whose save dialog proposes the policy title as the filename |
-
-Search runs in Python over the (few hundred) visible metadata rows:
-tokens are scored title 10 > category 6 > keywords 4 > summary 2 > body 1,
-**a token must hit a qualifier field (title/category/keywords/summary) to
-select a document** — body-only matches are noise that would surface every
-policy that once mentions "leave". Results carry no signed URLs; the
-frontend mints those separately via `/file` so links stay short-lived and
-per-audience.
-
-### Seeding the 30 policy documents
-
-```bash
-pip install -r scripts/requirements-seed.txt   # reportlab (seed tooling only)
-python scripts/seed_knowledge_base.py          # render + upload + upsert metadata
-python scripts/seed_knowledge_base.py --dry-run            # no Supabase calls
-python scripts/seed_knowledge_base.py --rows-only          # PDFs uploaded manually
-python scripts/seed_knowledge_base.py --force              # re-render all PDFs
+```
+hrdesk.request   – one line per HTTP request (method, path, status, duration_ms) — path only, never the query string
+hrdesk.flow      – started/completed/failed per business operation + layer milestones:
+    auth:            auth.login.*
+    users:           users.list.* / users.agents.* / users.meta.*
+    tickets:         tickets.create.* / tickets.list.* / tickets.get.* /
+                     tickets.reply.* / tickets.status.* / tickets.assign.* /
+                     tickets.priority.* / tickets.category.* / tickets.auto_assign.* /
+                     agents.workload.*
+    notifications:   notifications.list.* / notifications.mark_read.* /
+                     notifications.mark_all_read.* / notifications.sweep.*
+                     (GET unread-count is polled ~20 s — deliberately NOT instrumented;
+                      notification.deliver.* covers every delivery)
+    drafts:          drafts.create/list/get/update/delete/submit.* +
+                     drafts.attachment.upload/delete/url.*
+    attachments:     attachment.upload.* / attachment.url.*
+    milestones:      ticket.service.validation_completed / ticket.service.assignment_selected /
+                     draft.service.validation_completed / attachment.storage.upload_completed /
+                     attachment.storage.url_signed
+    repositories:    ticket.repository.insert_started/completed/failed /
+                     ticket.repository.update_started/completed/failed (patch COLUMNS only) /
+                     reply.repository.insert_started/completed
+    background jobs: job.sla_sweep.started/completed/failed /
+                     job.retention_cleanup.started/completed/failed (run_id + duration)
+    ingestion:       logs.ingest.rejected (WARNING on 429)
+    lifecycle:       app.startup / app.shutdown
+hrdesk.frontend  – ingested browser events ([frontend] http_request_* … keep the
+                   ORIGINAL operation's correlation_id + trace pair)
+httpx            – every Supabase HTTP round-trip: METHOD + sanitized path + "HTTP/2 <status>"
 ```
 
-Content (18 employee policies + 12 HR-only SOPs) lives in `app/kb_seed/`;
-each document's text blocks are rendered to a branded PDF by
-`app/kb_seed/render.py`, uploaded with upsert semantics, and the metadata
-row (including the lowercased `search_text` blob that powers scoring) is
-upserted by slug. Re-runs are cheap: PDFs are re-rendered only when bytes
-change, and every row update is idempotent, so a network hiccup mid-run
-resumes cleanly by running the same command again. Pre-rendered PDFs also
-sit in `scripts/knowledge_base_pdfs/`, so `--rows-only` works without
-reportlab when the files were uploaded to the bucket manually.
+Event naming convention: `{resource}.{action}.started/completed/failed` for
+controller boundaries, `{resource}.{layer}.{action}_{phase}` for deeper layers,
+`job.{task}.{phase}` for scheduled work. Failure records carry `status` (HTTP
+code when the exception has one) and `error` (exception CLASS NAME only) — plus
+the full traceback via the unhandled-exception handler when the request fails.
+Deliberate Policies: no controller events on `/api/notifications/unread-count`
+(polling) or `/api/logs/ingest` (self-referential sink); read paths get no
+repository events; notification deliveries are logged around the write, not per row.
 
-## 13. Timeouts and retries (the general norm)
+### 12.2 Frontend log events → the same log file
 
-`app/retries.py` is the single place that defines how every outbound call
-to Supabase behaves under failure — table queries (repositories), storage
-(signing/uploading/removing) and the GoTrue password grant all pass through
-it, so the policy is uniform and env-tunable in one spot. It composes with
-the circuit breakers of §11: `retry_call` runs OUTSIDE the breaker here
-(each attempt is admitted by the breaker), so an OPEN circuit fails fast
-instead of being retried — retries cover isolated blips, breakers cover
-outages.
+`POST /api/logs/ingest` (rate-limited per client IP, ≤20 validated events per
+batch). Behaviour that is **intentional**:
 
-**Timeouts.** The Supabase client is built with explicit budgets
-(`app/config.py`): an overall window per call (`SUPABASE_TIMEOUT`, default
-60 s — generous enough for remote-region round trips on home networks) and
-a much tighter connect budget (`SUPABASE_CONNECT_TIMEOUT`, default 10 s —
-a dead host is known within seconds instead of hanging a worker).
-The library default is a flat 120 s, which is far too permissive; a stalled
-upstream now fails fast into the retry layer instead of pinning a request.
+- The ingest POST is its own HTTP request with its own server-generated
+  `request_id` (and its own trace when tracing is on) — it is a transport hop,
+  not the observed operation.
+- Each ingested event carries the **original** operation's `correlation_id` and —
+  when tracing is on — its `trace_id`/`span_id` as a strict pair stamped only as
+  a complete pair, so the record shows the original request's trace (no mix).
+  Events also carry the `operation` label (`tickets.create`, …) matching the
+  backend's flow events.
+- Recursion/loops are impossible: `client.js` skips `logEvent` for `/logs`
+  routes; the ingest uses plain `fetch` (not `request()`); there are no retries;
+  backend write failures return 202 `{"accepted": 0}`; Rate limit trips produce
+  a `logs.ingest.rejected` WARNING, never payload contents.
 
-**Retries.** Only what is provably idempotent ever replays:
+### 12.3 Sensitive-data policy
 
-| Operation class | Policed how | Retries on |
+- Query strings never appear in logs — formatter-level redaction strips the
+  whole query part of any absolute URL and masks `token/password/secret/
+  authorization=...` pairs in plain text — covering httpx lines and exception
+  tracebacks at emit time.
+- Never logged: header values, tokens, cookies, passwords, request/response
+  bodies with HR data, ticket subjects/descriptions/replies, employee names or
+  emails, attachment file names or signed URLs (one-time tokens inside),
+  search text `q` (only its presence), patch VALUES (column names only), notification recipient ids.
+- Allowed metadata: timestamps, service name, level, event/operation names,
+  request/correlation id, trace/span ids (and run_id for jobs), sanitized
+  method + path, status codes, durations, counts, ticket refs, categories/
+  priorities/statuses, user UUIDs, storage paths (`TKT-n/<uuid>.<ext>`), file sizes/content types.
+- The client-supplied `X-Request-ID` is validated (strict format, regenerated
+  when invalid) — no log injection.
+
+### 12.4 Distributed tracing (Jaeger)
+
+```bash
+# separate terminal, alongside frontend + backend
+docker run --rm -p 16686:16686 -p 4318:4318 jaegertracing/all-in-one:latest
+open http://localhost:16686        # service selector: hrdesk-api
+```
+
+Verify: with `TRACE_ENABLED=true` (default), browse the app, then in the Jaeger
+UI pick service `hrdesk-api` → *Find recent traces*. One trace per browser API
+operation, containing the FastAPI server span (joined to the browser's
+traceparent), the `db.postgrest.*` spans and nested httpx client spans for the
+Supabase calls. The same `trace_id` appears in the corresponding app.log rows
+(search by `request_id`). The frontend spans themselves are not exported
+(context-only by design). Collector down? The backend keeps working; exporter
+failures are throttled by `OTEL_EXPORT_ERROR_LOG_WINDOW_SECONDS` (default 300 s,
+0 = off). `TRACE_ENABLED=false` skips instrumentation + export entirely.
+
+### 12.5 Log files
+
+- Default `backend/logs/app.log`, created automatically with `LOG_TO_FILE=true`
+  (directory auto-created on startup); midnight rotation;
+  `LOG_FILE_RETENTION_DAYS` kept (default 14); lazy-open — an unwritable path
+  degrades to console-only with one warning, never breaking requests.
+- `LOG_TO_FILE=false` → console only; no files touched. `logs/`/`*.log` are
+  gitignored — never commit logs.
+- Console format: `LOG_FORMAT=console|json`.
+
+Configuration reference (all also in `.env.example`):
+
+| Variable | Default | Meaning |
 | --- | --- | --- |
-| Reads (every `select` chain) | `classify_mode` → `read` | transient SQLSTATE classes 53/54/57/58 (connection, recovery, shutdown), `429` rate limits, `40001` serialization, `40P01` deadlock, read timeouts, connect failures |
-| Updates/deletes (`SyncFilterRequestBuilder`) | `write` (idempotent — replaying the same patch or predicate reaches the same state) | same set |
-| Inserts/upserts/rpc (`SyncQueryRequestBuilder`) | `guarded` — NOT idempotent: a replayed ticket insert could duplicate a row | **connect-phase failures only**, where the request provably never left the client — an exhausted 502 that may have committed stays a 502 |
+| `LOG_LEVEL` | `info` | floor level for app logs |
+| `LOG_FORMAT` | `console` | console (human) or json (one object per line) |
+| `LOG_TO_FILE` | `true` | rotating JSON file enabled |
+| `LOG_FILE_PATH` | `backend/logs/app.log` | file location |
+| `LOG_FILE_RETENTION_DAYS` | `14` | rotated files kept |
+| `TRACE_ENABLED` | `true` | all tracing instrumentation + export on/off |
+| `OTEL_SERVICE_NAME` | `hrdesk-api` | trace service name + `service_name` log field |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4318` | OTLP/HTTP collector base (Jaeger all-in-one local) |
+| `OTEL_EXPORT_ERROR_LOG_WINDOW_SECONDS` | `300` | exporter-failure log throttle window (0 = off) |
+| `ATTACHMENT_SIGNED_URL_TTL` | `3600` | also the default TTL logged on signed-URL events |
 
-The wait between attempts is full-jitter exponential backoff
-(`uniform(0, min(cap, initial · 2^(n-1)))`, AWS Builders' Library style):
-default envelope `RETRY_BACKOFF_INITIAL_S=0.5`, `RETRY_BACKOFF_MAX_S=2.0`,
-`RETRY_MAX_ATTEMPTS=3` — so a retry storm cannot hammer a struggling
-Supabase, and the worst added latency per request is ≈ 2.5 s before the
-original error surfaces unchanged. Constraint violations (`23xxx`) and SQL
-misuse (`42xxx`) never retry. Every retry logs a warning with the attempt,
-error class and delay (`hrdesk.retries` logger); the caller's error mapping
-(400/502) and breaker bookkeeping are untouched because `retry_call`
-re-raises the original exception.
+### 12.6 Following one request through the log
 
-Where the hooks live: `repositories/base.run()` (all table traffic —
-retries around the db breaker), `attachment_storage.py` + `kb_storage.py`
-(signed URLs retry as reads, uploads/removes as guarded writes around the
-storage breaker), `auth_service._grant` (guarded — bad credentials never
-replay, connect failures do). Request-level server timeouts stay where they
-belong operationally: `uvicorn`/reverse-proxy settings, not application code.
+Every request id (or the correlation id from the browser/devtools — each
+response echoes it as `X-Request-ID`) reconstructs the operation:
+
+```bash
+grep "734ee78c-2a13-41ad-9407-d3e80bead61b" backend/logs/app.log
+```
+
+Typical ticket-create sequence: frontend `http_request_start` → ingest receipt
+→ `tickets.create.started` → `ticket.service.validation_completed` →
+`ticket.repository.insert_started/_completed` → `notification.deliver.started/
+completed` → `tickets.create.completed` → httpx Supabase rows (sanitized) →
+middleware `POST /api/tickets -> 201 in …ms` → frontend
+`http_request_succeeded`. For background work, search the `run_id` instead:
+
+```bash
+grep '"run_id": "<32hex>"' backend/logs/app.log      # one scheduled sweep, end to end
+```
+
+Trace equivalent in Jaeger: search by the `trace_id` of any row above — the
+server span + db.postgrest + httpx children all share it.

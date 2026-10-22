@@ -14,26 +14,24 @@ Design constraints (unchanged from the old app/notifications.py, now layered):
   (employee reply on an unassigned ticket fans out to all agents); SLA
   sweep -> all agents, at most once per ticket/threshold.
 
-Event-driven and channel-agnostic. Ticket endpoints stay decoupled from
-notification logic: services call safe_notify(...) **after** the ticket write
-completes.
-
-Layering:
-- Pure rules/functions below (recipients, thresholds, message building) touch
-  no DB — unit-tested in tests/unit/test_notification_rules.py.
-- The NotificationService class emits rows and runs the background jobs via
-  injected repositories (notifications, users, tickets).
-
-Each background job run opens a root tracing span (hrdesk.jobs.*) when
-tracing is enabled; failure paths stay swallow-and-log.
+Observability: deliveries emit ``notification.deliver.started/completed/failed``
+(hrdesk.flow) with the event TYPE, recipient count and ticket ref — inside
+request context they carry the originating request id for free; in
+background context they carry none (correct — jobs have no HTTP request).
+Background jobs emit ``job.sla_sweep.*`` / ``job.retention_cleanup.*``
+started/completed/failed with a per-run ``run_id`` (uuid4) and duration:
+jobs have no HTTP request context, so a run id — not a fake request id —
+identifies a sweep. Failures keep their full traceback via log.exception in
+ADDITION to the structured failed event.
 """
 
 import logging
+import time
 from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException
 
-from app.observability import background_span
+from app.observability import background_span, flow_event, new_run_id
 from app.repositories.notification_repository import NotificationRepository
 from app.repositories.ticket_repository import TicketRepository
 from app.repositories.user_repository import UserRepository
@@ -256,19 +254,35 @@ class NotificationService:
         self._notifications.insert_rows(rows)
         return len(rows)
 
-    def safe_notify(
-        self,
-        ticket: dict,
-        event: str,
-        actor: dict | None,
-        recipient_ids: list,
-        payload: dict | None = None,
-    ) -> None:
-        """Fail-safe emit: a notification failure must never break a ticket action."""
+    def safe_notify(self, ticket: dict, event: str, actor: dict | None, recipient_ids: list,
+                    payload: dict | None = None) -> None:
+        """Fail-safe emit: a notification failure must never break a ticket
+        action. The structured deliver events carry safe metadata only —
+        event TYPE, recipient count, ticket ref (no notification rows'
+        recipient ids here; delivery details stay in the DB rows)."""
+        ref = _ticket_ids(ticket)[0]
+        count = len(sorted(set(filter(None, recipient_ids))))
+        flow_event(
+            "notification.deliver.started",
+            operation="notifications.emit",
+            event_type=event,
+            recipient_count=count,
+            ticket_ref=ref,
+        )
         try:
-            self.emit(ticket, event, actor, recipient_ids, payload)
-        except Exception:
-            log.exception("notification emit failed (event=%s ticket=%s)", event, ticket.get("ref"))
+            delivered = self.emit(ticket, event, actor, recipient_ids, payload)
+            flow_event(
+                "notification.deliver.completed",
+                operation="notifications.emit",
+                delivered=delivered,
+            )
+        except Exception as exc:
+            flow_event(
+                "notification.deliver.failed",
+                operation="notifications.emit",
+                error=type(exc).__name__,
+            )
+            log.exception("notification emit failed (event=%s ticket=%s)", event, ref)
 
     # -- background job 1: first-response SLA sweep --------------------------
 
@@ -276,13 +290,32 @@ class NotificationService:
         """Notify every agent about unassigned tickets past their first-response
         SLA (Urgent: 4h, else 24h). Each ticket/threshold notifies at most once.
         A failing sweep only logs — background jobs must not crash the app."""
+        run_id = new_run_id()  # jobs have no HTTP request context; run id, not request id
+        started = time.perf_counter()
         try:
             with background_span("hrdesk.jobs.sla_sweep") as span:
+                flow_event("job.sla_sweep.started", operation="jobs.sla_sweep", run_id=run_id)
                 notified = self._run_sla_sweep_inner()
+                duration_ms = round((time.perf_counter() - started) * 1000, 1)
                 if span is not None and span.is_recording():
                     span.set_attribute("hrdesk.notified", notified)
+                    span.set_attribute("hrdesk.run_id", run_id)
+                flow_event(
+                    "job.sla_sweep.completed",
+                    operation="jobs.sla_sweep",
+                    run_id=run_id,
+                    notified=notified,
+                    duration_ms=duration_ms,
+                )
                 return notified
-        except Exception:
+        except Exception as exc:
+            flow_event(
+                "job.sla_sweep.failed",
+                operation="jobs.sla_sweep",
+                run_id=run_id,
+                error=type(exc).__name__,
+                duration_ms=round((time.perf_counter() - started) * 1000, 1),
+            )
             log.exception("SLA sweep failed")
             return 0
 
@@ -306,13 +339,33 @@ class NotificationService:
     def run_retention_cleanup(self) -> int:
         """Delete read notifications older than 30 days and everything older
         than 180 days. Returns the number of rows deleted; failures only log."""
+        run_id = new_run_id()
+        started = time.perf_counter()
         try:
             with background_span("hrdesk.jobs.retention_cleanup") as span:
+                flow_event("job.retention_cleanup.started",
+                           operation="jobs.retention_cleanup", run_id=run_id)
                 deleted = self._run_retention_cleanup_inner()
+                duration_ms = round((time.perf_counter() - started) * 1000, 1)
                 if span is not None and span.is_recording():
                     span.set_attribute("hrdesk.deleted", deleted)
+                    span.set_attribute("hrdesk.run_id", run_id)
+                flow_event(
+                    "job.retention_cleanup.completed",
+                    operation="jobs.retention_cleanup",
+                    run_id=run_id,
+                    deleted=deleted,
+                    duration_ms=duration_ms,
+                )
                 return deleted
-        except Exception:
+        except Exception as exc:
+            flow_event(
+                "job.retention_cleanup.failed",
+                operation="jobs.retention_cleanup",
+                run_id=run_id,
+                error=type(exc).__name__,
+                duration_ms=round((time.perf_counter() - started) * 1000, 1),
+            )
             log.exception("retention cleanup failed")
             return 0
 

@@ -83,17 +83,28 @@ def test_agent_reply_notifies_owner_only(api):
 
 
 def test_assignment_notifies_assignee_only_on_change(api):
+    """Domain matrix (README §10): ticket_created fans out to ALL agents at
+    creation time, and assigning an unanswered ticket posts the pickup reply
+    AND adds ticket_assigned for the new assignee — the new assignee therefore
+    holds BOTH rows. Only RE-picking the same agent must stay quiet. (This
+    test used to pass only because the offline fake returned aliased rows,
+    which silently suppressed the assignment delivery; snapshot semantics are
+    now faithful, so the documented matrix is asserted directly.)"""
     ref = create_employee_ticket(api, U["priya"])["id"]
     api.client.patch(f"/api/tickets/{ref}/assignee", json={"assigneeId": U["ben"]})
-    assert len([n for n in list_for(api, U["ben"]) if n["ticketRef"] == ref]) == 1
+    ben_rows = [n for n in list_for(api, U["ben"]) if n["ticketRef"] == ref]
+    assert sorted(n["type"] for n in ben_rows) == ["ticket_assigned", "ticket_created"]
+    assigned = [n for n in ben_rows if n["type"] == "ticket_assigned"]
+    assert [n["recipientId"] for n in assigned] == [U["ben"]]
+    assert assigned[0]["message"] == f"{ref} was assigned to you"  # generic text; no actor name on this path
 
-    # re-picking the same assignee stays quiet
+    # re-picking the same assignee adds nothing new
     api.client.patch(f"/api/tickets/{ref}/assignee", json={"assigneeId": U["ben"]})
-    assert len([n for n in list_for(api, U["ben"]) if n["ticketRef"] == ref]) == 1
+    assert len([n for n in list_for(api, U["ben"]) if n["ticketRef"] == ref]) == 2
 
     # clearing the assignee notifies nobody
     api.client.patch(f"/api/tickets/{ref}/assignee", json={"assigneeId": None})
-    assert len([n for n in list_for(api, U["ben"]) if n["ticketRef"] == ref]) == 1
+    assert len([n for n in list_for(api, U["ben"]) if n["ticketRef"] == ref]) == 2
 
 
 def test_status_change_excludes_actor_and_third_parties(api):

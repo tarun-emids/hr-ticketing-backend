@@ -8,6 +8,13 @@ tested without a real Supabase project or network access.
 Wiring: every repository gets its client through app/deps.py, which resolves
 `app.config.get_client()` at call time — so patching app.config.get_client
 swaps in the fake for ALL layers at once (controllers -> services -> repos).
+
+Snapshot semantics: like the real PostgREST, SELECT results are DISCONNECTED
+copies of the rows — mutating a returned dict must never mutate the stored
+row (services read a row, then write via the builders; re-reading must show
+the write while already-captured references stay at their pre-write values).
+Storage gains remove() so draft attachment replacement flows behave like the
+real storage client (upload → patch → remove previous).
 """
 
 import os
@@ -134,22 +141,25 @@ class FakeQueryBuilder:
         if self._op == "insert":
             payloads = self._payload if isinstance(self._payload, list) else [self._payload]
             data = [t.on_insert(dict(p)) for p in payloads]
+            # disconnect results from the stored rows (snapshot semantics)
+            data = [dict(r) for r in data]
         elif self._op == "update":
             rows = self._matched()
             for r in rows:
                 r.update(self._payload)
                 t.touch(r)
-            data = list(rows) if self._returning else []
+            data = [dict(r) for r in rows] if self._returning else []
         elif self._op == "delete":
             doomed = self._matched()
             t.rows = [r for r in t.rows if r not in doomed]
-            data = list(doomed) if self._returning else []
+            data = [dict(r) for r in doomed] if self._returning else []
         else:
             data = self._matched()
             for col, desc in self._order:
                 data = sorted(data, key=lambda r: str(r.get(col) or ""), reverse=desc)
             if self._limit is not None:
                 data = data[: self._limit]
+            data = [dict(r) for r in data]  # reads return disconnected copies
         return _Result(data)
 
 
@@ -269,7 +279,11 @@ class FakeStorage:
             raise RuntimeError("storage down")
         self.supa.storage_files[(self.bucket, path)] = bytes(data)
 
-    def create_signed_url(self, path, ttl, options=None):
+    def remove(self, paths):
+        for path in paths or []:
+            self.supa.storage_files.pop((self.bucket, path), None)
+
+    def create_signed_url(self, path, ttl):
         self.supa.last_signed_ttl = ttl
         self.supa.last_signed_options = options
         url = f"https://fake.supabase.co/storage/v1/object/sign/{self.bucket}/{path}?token=x"
@@ -424,7 +438,7 @@ def ticket_payload(employee_id, **over):
         "employeeId": employee_id,
         "category": "Payroll",
         "subject": "May payslip missing shift allowance",
-        "description": "The May payslip does not include the 12 weekend shift hours I worked.",
+        "description": "The May payslip does not include the 12 hours of weekend shift allowance I worked.",
         "priority": "High",
     }
     base.update(over)
