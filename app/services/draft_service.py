@@ -18,7 +18,6 @@ import uuid as uuidlib
 
 from fastapi import HTTPException
 
-from app.config import SIGNED_URL_TTL
 from app.models import draft_out, ticket_out
 from app.observability import flow_event
 from app.repositories.attachment_storage import AttachmentStorageRepository
@@ -122,17 +121,20 @@ class DraftService:
             has_attachment=bool(draft.get("attachment_path")),
         )
 
-        ticket = self._tickets.insert_ticket({
-            "employee_id": employee_id,
-            "category": draft["category"],
-            "subject": subject,
-            "description": description,
-            "priority": draft["priority"],
-            "status": "Open",
-            "attachment_path": draft.get("attachment_path"),
-            "attachment_name": draft.get("attachment_name"),
-            "attachment_size": draft.get("attachment_size"),
-        }, operation="drafts.submit")
+        ticket = self._tickets.insert_ticket(
+            {
+                "employee_id": employee_id,
+                "category": draft["category"],
+                "subject": subject,
+                "description": description,
+                "priority": draft["priority"],
+                "status": "Open",
+                "attachment_path": draft.get("attachment_path"),
+                "attachment_name": draft.get("attachment_name"),
+                "attachment_size": draft.get("attachment_size"),
+            },
+            operation="drafts.submit",
+        )
         self._drafts.delete_draft(draft["id"])
         self._notifier.safe_notify(
             ticket, EV_CREATED, employee, created_recipients(self._notifier.agent_ids())
@@ -204,11 +206,11 @@ class DraftService:
             "attachment.storage.url_signed",
             operation="drafts.attachment_url",
             draft_id=draft_id,
-            expires_in_seconds=SIGNED_URL_TTL,
+            expires_in_seconds=self._storage.clamp_ttl(ttl),
         )
         return {
             "name": draft.get("attachment_name"),
             "size": draft.get("attachment_size"),
             "url": url,
-            "expiresInSeconds": SIGNED_URL_TTL,
+            "expiresInSeconds": self._storage.clamp_ttl(ttl),
         }

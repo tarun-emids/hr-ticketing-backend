@@ -4,6 +4,7 @@ Observability: ``users.list`` / ``users.agents`` / ``users.meta``
 started/completed events with row counts. Names/emails live in the API
 responses by necessity but never in the logs — counts and ids only.
 """
+
 from fastapi import APIRouter, Depends
 
 from app.deps import get_user_service

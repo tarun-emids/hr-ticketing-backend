@@ -3,7 +3,7 @@
 Writes accepted events through the app's standard logging configuration
 (``logging.getLogger("hrdesk.frontend")`` → root handlers → the SAME rotating
 ``backend/logs/app.log`` every backend record lands in). Nothing here touches
-Supabase, creates files, or changes handlers.
+the database, creates files, or changes handlers.
 
 Correlation semantics (documented in README §11): each ingest POST is its own
 HTTP request with its own server-side ``request_id`` — deliberately separate.

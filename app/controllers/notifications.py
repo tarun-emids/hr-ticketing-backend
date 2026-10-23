@@ -56,8 +56,9 @@ def list_notifications(
         limit=limit,
         offset=offset,
     ) as op:
-        result = svc.list_notifications(userId, unread_only=(state == "unread"),
-                                        limit=limit, offset=offset)
+        result = svc.list_notifications(
+            userId, unread_only=(state == "unread"), limit=limit, offset=offset
+        )
         op["count"] = len(result)
         return result
 

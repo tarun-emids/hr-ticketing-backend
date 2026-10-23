@@ -1,6 +1,6 @@
 """Frontend log ingestion (POST /api/logs/ingest) — corr. with backend logs.
 
-Runs hermetically: the shared conftest fixture wires FakeSupabase; ingestion
+Runs hermetically: the shared conftest fixture wires the offline database; ingestion
 doesn't touch Supabase at all — events go through the standard logging
 chain like every backend record (asserted via caplog, LOG_TO_FILE=false).
 
@@ -9,6 +9,7 @@ the event payload carries the ORIGINAL operation's correlation id and — since
 the OTel-SDK frontend — its trace_id/span_id pair; the record must show the
 original pair, never the ingest hop's (asserted on the emitted JSON).
 """
+
 import json
 import logging
 
@@ -84,12 +85,18 @@ def test_ingest_stamps_original_trace_pair_on_frontend_records(api, caplog):
 def test_ingest_trace_fields_are_stamped_as_a_pair_only(api, caplog):
     """One half of the pair -> neither is stamped (no mixed-trace records)."""
     with caplog.at_level(logging.INFO, logger="hrdesk.frontend"):
-        ok = _post(api, [
-            _event(traceId=_TRACE),                       # span missing
-        ])
-        alone = _post(api, [
-            _event(spanId=_SPAN),                         # trace missing
-        ])
+        ok = _post(
+            api,
+            [
+                _event(traceId=_TRACE),  # span missing
+            ],
+        )
+        alone = _post(
+            api,
+            [
+                _event(spanId=_SPAN),  # trace missing
+            ],
+        )
     assert ok.status_code == 202 and alone.status_code == 202
     records, payloads = _frontend_payloads(caplog)
     assert len(payloads) == 2
@@ -101,7 +108,7 @@ def test_ingest_trace_fields_are_stamped_as_a_pair_only(api, caplog):
 def test_ingest_rejects_malformed_trace_fields(api):
     bad_trace = _post(api, [_event(traceId="not-hex-nor-32-chars")])
     assert bad_trace.status_code == 422
-    bad_span = _post(api, [_event(spanId=_TRACE)])       # wrong length (32 vs 16)
+    bad_span = _post(api, [_event(spanId=_TRACE)])  # wrong length (32 vs 16)
     assert bad_span.status_code == 422
     injection = _post(api, [_event(traceId=_TRACE[:-1] + "\n")])
     assert injection.status_code == 422

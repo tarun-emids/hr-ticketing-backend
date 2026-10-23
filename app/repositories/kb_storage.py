@@ -1,34 +1,21 @@
-"""Supabase Storage repository for knowledge-base policy PDFs.
+"""PostgreSQL-backed knowledge-base PDFs with short-lived signed links."""
 
-The `knowledge-base` bucket is private (service-role only); every read is a
-short-lived signed URL minted on demand. One signing surface, two flavours:
-
-    view      — no transform: the browser renders the PDF inline (iframe /
-                new tab). The old implementation signed a `download` URL for
-                both purposes, which decays to a forced attachment download
-                and can never display inline; view/download are separated
-                here on purpose.
-    download  — `download` transform with a suggested filename, so the
-                browser's save dialog proposes 'Title.pdf' instead of a
-                signed-object hash.
-
-Version-tolerant like the rest of the sealed edges: older storage clients
-without the options parameter degrade to a plain sign. Signing is a replayable
-read (app/retries.py) riding on the shared storage circuit breaker
-(app/resilience.py).
-"""
+import hashlib
+import hmac
 import re
+import time
 from typing import Optional
+from urllib.parse import urlencode
 
 from fastapi import HTTPException
+from psycopg_pool import ConnectionPool
 
-from app import config as app_config
-from app.config import KB_BUCKET, SIGNED_URL_TTL
-from app.resilience import CircuitOpenError, storage_breaker
-from app.retries import READ, retry_call
+from app import config
+from app.config import SIGNED_URL_TTL
+from app.repositories.base import first_of
 
-# Characters a Content-Disposition filename should never carry
 _UNSAFE_FILENAME = re.compile(r'[\\/:*?"<>|\r\n\t]+')
+_PDF_PATH = "/api/kb/pdf"
 
 
 def safe_download_name(title: Optional[str]) -> str:
@@ -38,57 +25,59 @@ def safe_download_name(title: Optional[str]) -> str:
 
 
 class KbStorageRepository:
-    """Storage operator for the KB bucket — same boundary role as
-    AttachmentStorageRepository, different bucket + signing options."""
-
-    def __init__(self, client):
-        self._client = client
+    def __init__(self, database: ConnectionPool):
+        self._database = database
 
     @staticmethod
     def clamp_ttl(ttl: int) -> int:
         return max(60, min(ttl, 86400))
 
+    @staticmethod
+    def _signing_key() -> bytes:
+        key = config.ATTACHMENT_SIGNING_KEY.encode()
+        if len(key) < 32:
+            raise RuntimeError("ATTACHMENT_SIGNING_KEY must contain at least 32 characters.")
+        return key
+
     def signed_pdf_url(
         self,
-        path: str,
+        slug: str,
         ttl: int = SIGNED_URL_TTL,
         download: bool = False,
         download_name: Optional[str] = None,
     ) -> str:
-        """Signed URL for one policy PDF; with download=True the response is
-        marked as an attachment carrying the suggested filename."""
-        storage = self._client.storage.from_(KB_BUCKET)
         bounded = self.clamp_ttl(ttl)
-        options = None
-        if download:
-            options = {"download": download_name or safe_download_name(None)}
+        expires = int(time.time()) + bounded
+        filename = safe_download_name(download_name)
+        signature = self._signature(slug, expires, download, filename)
+        query = urlencode({"expires": expires, "download": str(download).lower(), "sig": signature})
+        return f"{_PDF_PATH}/{slug}?{query}"
 
-        def _sign():
-            if options is not None:
-                try:
-                    return storage_breaker.call(
-                        lambda: storage.create_signed_url(path, bounded, options)
-                    )
-                except TypeError:
-                    # Older storage client without the options parameter —
-                    # degrade to a plain sign (link still works, browser
-                    # just picks the raw object name for 'save as').
-                    return storage_breaker.call(
-                        lambda: storage.create_signed_url(path, bounded)
-                    )
-            return storage_breaker.call(lambda: storage.create_signed_url(path, bounded))
+    def read_signed(
+        self,
+        slug: str,
+        expires: int,
+        download: bool,
+        signature: str,
+    ) -> tuple[bytes, str, bool]:
+        row = first_of(
+            self._database,
+            "SELECT title, file_data FROM kb_documents WHERE slug = %s",
+            (slug,),
+            table="kb_documents",
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Knowledge base file not found.")
 
-        try:
-            res = retry_call(_sign, mode=READ)
-        except CircuitOpenError:
-            raise HTTPException(
-                status_code=503,
-                detail="Attachment storage is temporarily unavailable — try again shortly.",
-            )
-        except Exception as e:
-            raise HTTPException(status_code=502, detail=f"Could not sign URL: {e}")
+        filename = safe_download_name(row["title"])
+        expected = self._signature(slug, expires, download, filename)
+        if expires < int(time.time()) or not hmac.compare_digest(signature, expected):
+            raise HTTPException(status_code=404, detail="Knowledge base file not found.")
+        if row["file_data"] is None:
+            raise HTTPException(status_code=404, detail="Knowledge base file not found.")
+        return row["file_data"], filename, download
 
-        url = (res.get("signedURL") if isinstance(res, dict) else None) or ""
-        if url and not url.startswith("http"):
-            url = f"{app_config.SUPABASE_URL}/storage/v1{url}"
-        return url
+    @classmethod
+    def _signature(cls, slug: str, expires: int, download: bool, filename: str) -> str:
+        message = f"{slug}.{expires}.{int(download)}.{filename}".encode()
+        return hmac.new(cls._signing_key(), message, hashlib.sha256).hexdigest()

@@ -155,7 +155,9 @@ def update_status(
 
 
 @router.patch("/tickets/{tid}/assignee")
-def assign_ticket(tid: str, payload: AssigneeUpdate, svc: TicketService = Depends(get_ticket_service)):
+def assign_ticket(
+    tid: str, payload: AssigneeUpdate, svc: TicketService = Depends(get_ticket_service)
+):
     with flow_operation(
         "tickets.assign",
         operation="tickets.assign",
@@ -169,7 +171,9 @@ def assign_ticket(tid: str, payload: AssigneeUpdate, svc: TicketService = Depend
 
 
 @router.patch("/tickets/{tid}/priority")
-def set_priority(tid: str, payload: PriorityUpdate, svc: TicketService = Depends(get_ticket_service)):
+def set_priority(
+    tid: str, payload: PriorityUpdate, svc: TicketService = Depends(get_ticket_service)
+):
     with flow_operation(
         "tickets.priority",
         operation="tickets.priority",
@@ -182,7 +186,9 @@ def set_priority(tid: str, payload: PriorityUpdate, svc: TicketService = Depends
 
 
 @router.patch("/tickets/{tid}/category")
-def set_category(tid: str, payload: CategoryUpdate, svc: TicketService = Depends(get_ticket_service)):
+def set_category(
+    tid: str, payload: CategoryUpdate, svc: TicketService = Depends(get_ticket_service)
+):
     with flow_operation(
         "tickets.category",
         operation="tickets.category",

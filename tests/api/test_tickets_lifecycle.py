@@ -1,3 +1,6 @@
+from uuid import UUID
+
+from app.repositories.user_repository import UserRepository
 from tests.conftest import U
 
 
@@ -152,6 +155,35 @@ def test_assign_to_unanswered_ticket_posts_pickup_reply(api):
     assert pickup["text"] == (
         "Thanks for raising this — I've picked it up and will get back to you shortly."
     )
+
+
+def test_auto_assign_uses_postgresql_uuid_agent_ids(api, monkeypatch):
+    agents = UserRepository.agents
+
+    def agents_with_uuid_ids(repository):
+        rows = agents(repository)
+        for row in rows:
+            row["id"] = UUID(row["id"])
+        return rows
+
+    monkeypatch.setattr(UserRepository, "agents", agents_with_uuid_ids)
+    workload = api.client.get("/api/agents/workload")
+    assert workload.status_code == 200
+    assert len(workload.json()) == 3
+
+    response = api.client.post("/api/tickets/TKT-101/auto-assign")
+    assert response.status_code == 200, response.text
+    ticket = response.json()
+    assert ticket["assigneeId"] in {agent["id"] for agent in workload.json()}
+    assert ticket["routedTo"]["id"] == ticket["assigneeId"]
+    assert ticket["status"] == "In Progress"
+    assert ticket["turns"][-1]["role"] == "agent"
+
+
+def test_user_lookup_accepts_postgresql_uuid(api):
+    user = UserRepository(api.fake).get_by_id(UUID(U["ben"]))
+    assert user is not None
+    assert user["id"] == U["ben"]
 
 
 def test_assign_to_already_replied_ticket_no_duplicate_pickup(api):

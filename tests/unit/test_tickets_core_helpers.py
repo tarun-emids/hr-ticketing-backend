@@ -1,23 +1,31 @@
+"""Repository helper tests for PostgreSQL identifiers and SQL error mapping."""
+
 import uuid as uuidlib
+from contextlib import contextmanager
 
 import pytest
 from fastapi import HTTPException
-from postgrest.exceptions import APIError
+from psycopg.errors import ForeignKeyViolation, InvalidPassword, SyntaxError
 
-from app.repositories.base import run, unwrap
+from app.repositories.base import _db_failure, run
 from app.repositories.ticket_repository import ticket_ref
 
 
-class _Boom:
-    def __init__(self, code):
-        self._code = code
+class _BrokenConnection:
+    def __init__(self, error):
+        self.error = error
 
-    def execute(self):
-        raise APIError({"message": "constraint boom", "code": self._code})
+    def execute(self, _sql, _params):
+        raise self.error
 
 
-def _api_error(code, message="boom"):
-    return APIError({"message": message, "code": code})
+class _BrokenPool:
+    def __init__(self, error):
+        self.connection_instance = _BrokenConnection(error)
+
+    @contextmanager
+    def connection(self):
+        yield self.connection_instance
 
 
 def test_ticket_ref_uuid_routes_to_id_column():
@@ -37,41 +45,29 @@ def test_ticket_ref_garbage_gets_prefixed():
     assert ticket_ref("abc!") == ("ref", "TKT-abc!")
 
 
-def test_unwrap_tuple():
-    data = [{"x": 1}]
-    assert unwrap((data, 5)) is data
-
-
-def test_unwrap_container():
-    assert unwrap({"id": 1}) == {"id": 1}
-    assert unwrap([1, 2]) == [1, 2]
-
-
-def test_unwrap_api_response_like():
-    class R:
-        data = [{"y": 2}]
-
-    assert unwrap(R()) == [{"y": 2}]
-
-
-def test_unwrap_none_falls_back():
-    assert unwrap(None) is None
-
-
-def test_constraint_error_maps_to_400():
+def test_constraint_error_maps_to_400_without_counting_as_outage():
+    error = ForeignKeyViolation("foreign key violated")
+    assert not _db_failure(error)
     with pytest.raises(HTTPException) as exc:
-        run(_Boom("23503"))
+        run(_BrokenPool(error), "INSERT INTO tickets (employee_id) VALUES (%s)", ("bad",))
     assert exc.value.status_code == 400
-    assert "Database rejected the write" in exc.value.detail
+    assert exc.value.detail == "Database rejected the write."
 
 
-def test_other_db_error_maps_to_502():
+def test_database_outage_maps_to_502_and_counts():
+    from psycopg import OperationalError
+
+    error = OperationalError("connection refused")
+    assert _db_failure(error)
     with pytest.raises(HTTPException) as exc:
-        run(_Boom("XX999"))
+        run(_BrokenPool(error), "SELECT * FROM users", table="users")
     assert exc.value.status_code == 502
 
 
-def test_code_attribute_exists_as_empty_string():
-    err = _api_error("", "no code")
-    assert err.code == ""
-    assert err.message == "no code"
+def test_sql_syntax_error_does_not_trip_the_database_breaker():
+    error = SyntaxError("invalid SQL")
+    assert not _db_failure(error)
+
+
+def test_invalid_database_credentials_do_not_trip_the_breaker():
+    assert not _db_failure(InvalidPassword("invalid credentials"))

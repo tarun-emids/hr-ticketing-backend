@@ -6,6 +6,7 @@ notification recipient rules. The scorer's contract:
     the document is not selectable, no matter how well the body matches;
   - field weights order the results; exact title-phrase adds a bonus.
 """
+
 from app.services.kb_service import (
     POPULAR_LIMIT,
     ROLE_POOLS,
@@ -81,20 +82,21 @@ def test_title_hit_scores_higher_than_body_hit():
 
 
 def test_weights_order_field_hits_strictly():
-    title_hitter = _doc(title="Leave Policy Zeta")                 # token in title
+    title_hitter = _doc(title="Leave Policy Zeta")  # token in title
     category_hitter = _doc(title="Working Hours", category="Leave")
-    keywords_hitter = _doc(title="Working Hours", category="Workplace",
-                           keywords="leave, shift")
-    summary_hitter = _doc(title="Working Hours", category="Workplace",
-                          keywords="shift", summary="leave accrual detail")
-    ranked = search_rows(
-        [summary_hitter, keywords_hitter, category_hitter, title_hitter], "leave"
+    keywords_hitter = _doc(title="Working Hours", category="Workplace", keywords="leave, shift")
+    summary_hitter = _doc(
+        title="Working Hours",
+        category="Workplace",
+        keywords="shift",
+        summary="leave accrual detail",
     )
+    ranked = search_rows([summary_hitter, keywords_hitter, category_hitter, title_hitter], "leave")
     assert [d["title"] for d in ranked] == [
-        "Leave Policy Zeta",     # title hits outrank everything
-        "Working Hours",         # category hit
-        "Working Hours",         # keywords hit
-        "Working Hours",         # summary hit ranks last but still selected
+        "Leave Policy Zeta",  # title hits outrank everything
+        "Working Hours",  # category hit
+        "Working Hours",  # keywords hit
+        "Working Hours",  # summary hit ranks last but still selected
     ]
 
 

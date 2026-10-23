@@ -2,12 +2,12 @@
 started/completed/failed trio under ``hrdesk.flow`` with the shared request
 id, safe error classification, and never any HR-sensitive content.
 
-Offline everywhere: FakeSupabase (shared conftest), GoTrue grant monkeypatched
-at the module boundary (no network, no tokens), storage handled by FakeStorage.
+Offline everywhere: the shared SQLite pool and in-memory file records are used;
+no external database or storage service is contacted.
 """
+
 import logging
 import re
-import types
 
 from tests.conftest import U
 
@@ -27,21 +27,19 @@ def _names(records):
 # A. Authentication
 # ---------------------------------------------------------------------------
 
-def _grant_stub(email, password):
-    return types.SimpleNamespace(
-        user=types.SimpleNamespace(email="priya@acme.com", id="auth-user-1")
+
+def test_login_success_emits_operation_events(api, caplog):
+    from app.services.passwords import hash_password
+
+    api.fake.execute(
+        "UPDATE users SET password_hash = ? WHERE id = ?",
+        (hash_password("valid-test-password"), U["priya"]),
     )
-
-
-def test_login_success_emits_operation_events(api, caplog, monkeypatch):
-    from app.services import auth_service
-
-    monkeypatch.setattr(auth_service, "_grant", _grant_stub)
     with caplog.at_level(logging.INFO, logger="hrdesk.flow"):
         res = api.client.post(
             "/api/auth/login",
             headers={"X-Request-ID": "appflow-login-00001"},
-            json={"email": "priya@acme.com", "password": "whatever-never-logged"},
+            json={"email": "priya@acme.com", "password": "valid-test-password"},
         )
     assert res.status_code == 200
     events = _flow_records(caplog)
@@ -53,23 +51,7 @@ def test_login_success_emits_operation_events(api, caplog, monkeypatch):
     assert events[-1].http["user_id"] == U["priya"]  # verified account's UUID
 
 
-def test_login_failure_classification(api, caplog, monkeypatch):
-    from app.services import auth_service
-
-    class _AuthApiErrorStub(Exception):
-        """Duck-typed supabase AuthApiError: raises (like GoTrue does) and
-        carries .message/.status so auth_service classifies it as a grant
-        error and maps it to 401."""
-
-        def __init__(self, message="Invalid login credentials", status=400):
-            super().__init__(message)
-            self.message = message
-            self.status = status
-
-    def bad_grant(email, password):
-        raise _AuthApiErrorStub(status=400)  # GoTrue RAISES on bad credentials
-
-    monkeypatch.setattr(auth_service, "_grant", bad_grant)
+def test_login_failure_classification(api, caplog):
     with caplog.at_level(logging.INFO, logger="hrdesk.flow"):
         res = api.client.post(
             "/api/auth/login",
@@ -80,7 +62,7 @@ def test_login_failure_classification(api, caplog, monkeypatch):
     events = _flow_records(caplog)
     assert _names(events) == ["auth.login.started", "auth.login.failed"]
     failed = events[1]
-    assert failed.http["status"] == 401          # mapped GoTrue failure — safe diagnostic
+    assert failed.http["status"] == 401
     assert failed.http["error"] == "HTTPException"
     assert failed.http["request_id"] == "appflow-loginfail1"
     assert "wrong" not in failed.getMessage()
@@ -91,6 +73,7 @@ def test_login_failure_classification(api, caplog, monkeypatch):
 # B. Users
 # ---------------------------------------------------------------------------
 
+
 def test_users_listing_events_with_counts(api, caplog):
     with caplog.at_level(logging.INFO, logger="hrdesk.flow"):
         users = api.client.get("/api/users", headers={"X-Request-ID": "appflow-users-00001"})
@@ -100,9 +83,12 @@ def test_users_listing_events_with_counts(api, caplog):
     events = _flow_records(caplog)
     names = _names(events)
     assert names == [
-        "users.list.started", "users.list.completed",
-        "users.agents.started", "users.agents.completed",
-        "users.meta.started", "users.meta.completed",
+        "users.list.started",
+        "users.list.completed",
+        "users.agents.started",
+        "users.agents.completed",
+        "users.meta.started",
+        "users.meta.completed",
     ]
     assert events[1].http["count"] == 7
     assert events[3].http["count"] == 3
@@ -111,6 +97,7 @@ def test_users_listing_events_with_counts(api, caplog):
 # ---------------------------------------------------------------------------
 # C. Ticket reads / filters (search value never logged)
 # ---------------------------------------------------------------------------
+
 
 def test_ticket_list_events_never_log_search_text(api, caplog):
     with caplog.at_level(logging.INFO, logger="hrdesk.flow"):
@@ -122,11 +109,11 @@ def test_ticket_list_events_never_log_search_text(api, caplog):
     events = _flow_records(caplog)
     assert _names(events) == ["tickets.list.started", "tickets.list.completed"]
     started, completed = events
-    assert started.http["status"] == "Resolved"      # enum filter — allowed
-    assert "q" not in started.http                   # search value never a field
-    assert started.http["search"] is True            # presence only
+    assert started.http["status"] == "Resolved"  # enum filter — allowed
+    assert "q" not in started.http  # search value never a field
+    assert started.http["search"] is True  # presence only
     assert "equipment" not in started.getMessage()
-    assert completed.http["count"] == 1              # seeded TKT-103 is Resolved
+    assert completed.http["count"] == 1  # seeded TKT-103 is Resolved
 
 
 def test_ticket_get_events(api, caplog):
@@ -136,8 +123,10 @@ def test_ticket_get_events(api, caplog):
     assert ok.status_code == 200 and missing.status_code == 404
     events = _flow_records(caplog)
     assert _names(events) == [
-        "tickets.get.started", "tickets.get.completed",
-        "tickets.get.started", "tickets.get.failed",
+        "tickets.get.started",
+        "tickets.get.completed",
+        "tickets.get.started",
+        "tickets.get.failed",
     ]
     assert events[1].http["ticket_ref"] == "TKT-102"
     assert events[3].http["status"] == 404
@@ -146,6 +135,7 @@ def test_ticket_get_events(api, caplog):
 # ---------------------------------------------------------------------------
 # D. Ticket lifecycle writes (status / priority / assign / auto-assign)
 # ---------------------------------------------------------------------------
+
 
 def test_status_update_full_chain(api, caplog):
     with caplog.at_level(logging.INFO, logger="hrdesk.flow"):
@@ -189,11 +179,11 @@ def test_assign_flow_emits_reply_and_update_events(api, caplog):
     assert names == [
         "tickets.assign.started",
         "ticket.service.validation_completed",
-        "reply.repository.insert_started",     # the agent pickup reply
+        "reply.repository.insert_started",  # the agent pickup reply
         "reply.repository.insert_completed",
         "ticket.repository.update_started",
         "ticket.repository.update_completed",
-        "notification.deliver.started",        # actual reassignment → deliver
+        "notification.deliver.started",  # actual reassignment → deliver
         "notification.deliver.completed",
         "tickets.assign.completed",
     ]
@@ -205,12 +195,8 @@ def test_assign_flow_emits_reply_and_update_events(api, caplog):
 def test_reassigning_the_same_agent_does_not_notify(api, caplog):
     """Re-picking the current assignee stays quiet (deliver rows absent)."""
     with caplog.at_level(logging.INFO, logger="hrdesk.flow"):
-        first = api.client.patch(
-            "/api/tickets/TKT-101/assignee", json={"assigneeId": U["alicia"]}
-        )
-        second = api.client.patch(
-            "/api/tickets/TKT-101/assignee", json={"assigneeId": U["alicia"]}
-        )
+        first = api.client.patch("/api/tickets/TKT-101/assignee", json={"assigneeId": U["alicia"]})
+        second = api.client.patch("/api/tickets/TKT-101/assignee", json={"assigneeId": U["alicia"]})
     assert first.status_code == 200 and second.status_code == 200
     events = _flow_records(caplog)
     # first PATCH: assign (9 rows incl. reply insert + deliver);
@@ -265,6 +251,7 @@ def test_agents_workload_events(api, caplog):
 # E. Notifications (unread-count deliberately NOT instrumented — polling)
 # ---------------------------------------------------------------------------
 
+
 def test_unread_count_polls_without_flow_events(api, caplog):
     with caplog.at_level(logging.INFO, logger="hrdesk.flow"):
         res = api.client.get("/api/notifications/unread-count", params={"userId": U["priya"]})
@@ -275,7 +262,8 @@ def test_unread_count_polls_without_flow_events(api, caplog):
 def test_notification_list_and_read_flows(api, caplog):
     with caplog.at_level(logging.INFO, logger="hrdesk.flow"):
         listed = api.client.get(
-            "/api/notifications", params={"userId": U["priya"]},
+            "/api/notifications",
+            params={"userId": U["priya"]},
             headers={"X-Request-ID": "appflow-notif-00001"},
         )
         mark_all = api.client.post("/api/notifications/read-all", json={"userId": U["priya"]})
@@ -288,9 +276,12 @@ def test_notification_list_and_read_flows(api, caplog):
     events = _flow_records(caplog)
     names = _names(events)
     assert names == [
-        "notifications.list.started", "notifications.list.completed",
-        "notifications.mark_all_read.started", "notifications.mark_all_read.completed",
-        "notifications.mark_read.started", "notifications.mark_read.failed",
+        "notifications.list.started",
+        "notifications.list.completed",
+        "notifications.mark_all_read.started",
+        "notifications.mark_all_read.completed",
+        "notifications.mark_read.started",
+        "notifications.mark_read.failed",
     ]
     list_completed = events[1]
     assert list_completed.http["count"] == 0
@@ -305,6 +296,7 @@ def test_notification_list_and_read_flows(api, caplog):
 # F. Drafts (create / update / submit / attachments)
 # ---------------------------------------------------------------------------
 
+
 def test_draft_create_update_submit_flow(api, caplog):
     """Three separate HTTP requests → three request ids (verified behavior:
     the middleware scopes ids per request — never invent shared ones)."""
@@ -313,14 +305,17 @@ def test_draft_create_update_submit_flow(api, caplog):
             "/api/drafts",
             headers={"X-Request-ID": "appflow-drafts-001"},
             json={
-                "employeeId": U["priya"], "category": "Payroll", "priority": "Medium",
+                "employeeId": U["priya"],
+                "category": "Payroll",
+                "priority": "Medium",
                 "subject": "Draft about payroll",
                 "description": "Draft description long enough for submission validation.",
             },
         )
         draft_id = created.json()["id"]
         updated = api.client.patch(
-            f"/api/drafts/{draft_id}", params={"employeeId": U["priya"]},
+            f"/api/drafts/{draft_id}",
+            params={"employeeId": U["priya"]},
             json={"subject": "Renamed draft subject"},
         )
         submitted = api.client.post(
@@ -331,8 +326,10 @@ def test_draft_create_update_submit_flow(api, caplog):
     events = _flow_records(caplog)
     names = _names(events)
     assert names == [
-        "drafts.create.started", "drafts.create.completed",
-        "drafts.update.started", "drafts.update.completed",
+        "drafts.create.started",
+        "drafts.create.completed",
+        "drafts.update.started",
+        "drafts.update.completed",
         "drafts.submit.started",
         "draft.service.validation_completed",
         "ticket.repository.insert_started",
@@ -359,22 +356,25 @@ def test_draft_create_update_submit_flow(api, caplog):
 def test_draft_submit_validation_failure(api, caplog):
     with caplog.at_level(logging.INFO, logger="hrdesk.flow"):
         created = api.client.post(
-            "/api/drafts", json={
-                "employeeId": U["priya"], "category": "Payroll", "priority": "Low",
+            "/api/drafts",
+            json={
+                "employeeId": U["priya"],
+                "category": "Payroll",
+                "priority": "Low",
                 "subject": "hi",  # < 5 chars → submit fails validation
                 "description": "Short draft body text.",
-            }
+            },
         )
         draft_id = created.json()["id"]
-        res = api.client.post(
-            f"/api/drafts/{draft_id}/submit", json={"employeeId": U["priya"]}
-        )
+        res = api.client.post(f"/api/drafts/{draft_id}/submit", json={"employeeId": U["priya"]})
     assert res.status_code == 422
     events = _flow_records(caplog)
     names = _names(events)
     assert names == [
-        "drafts.create.started", "drafts.create.completed",
-        "drafts.submit.started", "drafts.submit.failed",
+        "drafts.create.started",
+        "drafts.create.completed",
+        "drafts.submit.started",
+        "drafts.submit.failed",
     ]
     failed = events[-1]
     assert failed.http["status"] == 422
@@ -383,6 +383,7 @@ def test_draft_submit_validation_failure(api, caplog):
 # ---------------------------------------------------------------------------
 # G. Attachments (ticket + draft): sizes/types logged, never names/URLs
 # ---------------------------------------------------------------------------
+
 
 def test_ticket_attachment_upload_and_url_events(api, caplog):
     with caplog.at_level(logging.INFO, logger="hrdesk.flow"):
@@ -405,25 +406,29 @@ def test_ticket_attachment_upload_and_url_events(api, caplog):
         "attachment.url.completed",
     ]
     started = events[0]
-    assert "TKT-102" in started.http["path"]         # ref rides the path on start
-    assert started.http["ticket_ref"] == "TKT-102"   # request descriptors on both events
+    assert "TKT-102" in started.http["path"]  # ref rides the path on start
+    assert started.http["ticket_ref"] == "TKT-102"  # request descriptors on both events
     assert started.http["content_type"] == "application/pdf"
     storage = events[1]
     assert storage.http["storage_path"].startswith("TKT-102/")  # bucket path, no filename
     upload_completed = events[4]
     assert upload_completed.http["ticket_ref"] == "TKT-102"
     for rec in events:
-        assert "employee-payslip.pdf" not in rec.getMessage()   # file NAME never logged
-        assert "fake.supabase.co" not in rec.getMessage()       # signed URL never logged
+        assert "employee-payslip.pdf" not in rec.getMessage()  # file NAME never logged
+        assert "fake.supabase.co" not in rec.getMessage()  # signed URL never logged
 
 
 def test_draft_attachment_upload_events(api, caplog):
     with caplog.at_level(logging.INFO, logger="hrdesk.flow"):
         created = api.client.post(
-            "/api/drafts", json={
-                "employeeId": U["priya"], "category": "Payroll", "priority": "Low",
-                "subject": "Draft with file", "description": "Long enough draft body text.",
-            }
+            "/api/drafts",
+            json={
+                "employeeId": U["priya"],
+                "category": "Payroll",
+                "priority": "Low",
+                "subject": "Draft with file",
+                "description": "Long enough draft body text.",
+            },
         )
         draft_id = created.json()["id"]
         upload = api.client.post(
@@ -445,9 +450,12 @@ def test_draft_attachment_upload_events(api, caplog):
     assert started.http["draft_id"] == draft_id
     assert started.http["size_bytes"] == 4
     assert started.http["content_type"] == "text/plain"
-    storage = next(r for r in events
-                   if r.http["event"] == "attachment.storage.upload_completed"
-                   and r.http.get("draft_id") == draft_id)
+    storage = next(
+        r
+        for r in events
+        if r.http["event"] == "attachment.storage.upload_completed"
+        and r.http.get("draft_id") == draft_id
+    )
     assert storage.http["size_bytes"] == 4
     for rec in events:
         assert "notes.txt" not in rec.getMessage()
@@ -458,9 +466,11 @@ def test_draft_attachment_upload_events(api, caplog):
 # H. Log-ingestion rejection (rate limiter) — diagnosable, loop-free
 # ---------------------------------------------------------------------------
 
+
 def test_log_ingest_rate_limit_rejection_event(api, caplog, monkeypatch):
-    from app.services import log_ingest_service as svc_mod
     import time as _time
+
+    from app.services import log_ingest_service as svc_mod
 
     monkeypatch.setattr(svc_mod.time, "monotonic", _time.monotonic)
     hits = svc_mod._RATE_HITS.setdefault("testclient", [])
@@ -489,6 +499,7 @@ def test_log_ingest_rate_limit_rejection_event(api, caplog, monkeypatch):
 # I. Background jobs: run ids, durations, and NO fabricated request context
 # ---------------------------------------------------------------------------
 
+
 def test_background_job_events_have_run_id_and_no_request_id(api, caplog):
     """Calling the jobs directly (as the lifespan scheduler does) must produce
     job.sla_sweep.* / job.retention_cleanup.* rows WITHOUT a request_id —
@@ -511,7 +522,7 @@ def test_background_job_events_have_run_id_and_no_request_id(api, caplog):
         deleted = svc.run_retention_cleanup()
 
     assert notified >= 1  # seeded unassigned Open tickets are hours past their SLA
-    assert deleted == 0   # fresh rows — nothing past retention cutoffs
+    assert deleted == 0  # fresh rows — nothing past retention cutoffs
     events = _flow_records(caplog)
     names = _names(events)
     assert names == [
@@ -525,9 +536,7 @@ def test_background_job_events_have_run_id_and_no_request_id(api, caplog):
     sweep_started = events[0]
     run_id = sweep_started.http["run_id"]
     assert re.fullmatch(r"[0-9a-f]{32}", run_id)
-    sweep_completed = next(
-        r for r in events if r.http["event"] == "job.sla_sweep.completed"
-    )
+    sweep_completed = next(r for r in events if r.http["event"] == "job.sla_sweep.completed")
     assert sweep_completed.http["notified"] == notified
     assert re.fullmatch(r"\d+(\.\d+)?", str(sweep_completed.http["duration_ms"]))
     for rec in events:

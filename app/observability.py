@@ -16,21 +16,20 @@ What gets a span (when tracing is on):
 
 - every ``/api`` HTTP request: a server span, joined to the browser trace
   via the W3C ``traceparent`` header the frontend client sends;
-- every Supabase HTTP round-trip: httpx client spans (automatic);
-- every PostgREST call that goes through ``app.repositories.base.run()``:
-  a semantic db span with the operation and, when obtainable, the table;
+- every PostgreSQL call that goes through ``app.repositories.base.run()``:
+  a semantic db span with the operation and table;
 - each background notification job run: a root span per sweep.
 
-Nothing inside Supabase/Postgres itself is instrumented — spans only cover
-the HTTP hops this backend actually makes. Jaeger is the trace viewer;
+Nothing inside PostgreSQL itself is instrumented — spans cover the database
+calls this backend makes. Jaeger is the trace viewer;
 persistent APPLICATION logs are the rotating JSON files, not Jaeger.
 
 Security: never log header values, secrets, or ticket content (subject,
 description, reply text). Query strings are deliberately never logged —
 the shared redaction used by BOTH formatters strips the whole query part
-of any absolute URL in a record (PostgREST filters carry user ids and
-enum values that must not leak) and masks dangerous ``name=value`` pairs
-in non-URL text, so third-party lines (httpx logs the full request URL)
+of any absolute URL in a record (query strings can carry user ids and
+filter values that must not leak) and masks dangerous ``name=value`` pairs
+in non-URL text, so third-party lines (httpx logs full request URLs)
 and exception tracebacks are covered too, at emit time. Client-supplied
 request ids are validated against a strict format and regenerated when
 invalid — an attacker cannot inject log content through ``X-Request-ID``.
@@ -89,7 +88,7 @@ REQUEST_ID_HEADER = "x-request-id"
 _CLIENT_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{7,63}$")
 
 # Absolute URLs that carry a query string are cut at the '?' (path alone is
-# kept for correlation). httpx logs the full request URL of every Supabase
+# kept for correlation). httpx logs full third-party request URLs
 # round-trip — REST/Storage/Auth filters ride in the query as selectors like
 # ``id=eq.<uuid>``, i.e. record references that must not reach the log.
 # Applied at emit time in the formatters, so third-party lines and exception
@@ -113,9 +112,7 @@ def _strip_url_queries(text: str) -> str:
 def _redact_sensitive(text: str) -> str:
     """Sanitize emitted text: 1) sensitive ``name=value`` pairs masked,
     2) any absolute URL loses its whole query string (see module docstring)."""
-    return _strip_url_queries(
-        _SENSITIVE_PARAM_RE.sub(lambda m: f"{m.group(1)}=[REDACTED]", text)
-    )
+    return _strip_url_queries(_SENSITIVE_PARAM_RE.sub(lambda m: f"{m.group(1)}=[REDACTED]", text))
 
 
 # Per-request correlation context (safe across async request handling).
@@ -204,8 +201,13 @@ def flow_warning(event: str, operation: str | None = None, **fields) -> None:
 
 
 @contextmanager
-def flow_operation(event_base: str, operation: str | None = None,
-                   method: str | None = None, path: str | None = None, **fields):
+def flow_operation(
+    event_base: str,
+    operation: str | None = None,
+    method: str | None = None,
+    path: str | None = None,
+    **fields,
+):
     """Standard started/completed/failed event trio around one operation.
 
     Controllers wrap each endpoint body in this; the emitted names are
@@ -485,7 +487,6 @@ def setup_tracing(app) -> bool:
             OTLPSpanExporter,
         )
         from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
-        from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
         from opentelemetry.sdk.resources import Resource
         from opentelemetry.sdk.trace import TracerProvider
         from opentelemetry.sdk.trace.export import BatchSpanProcessor
@@ -504,8 +505,6 @@ def setup_tracing(app) -> bool:
     _otel_trace.set_tracer_provider(provider)
     _install_exporter_log_throttle()
 
-    # Client spans for every Supabase postgrest/gotrue/storage HTTP call.
-    HTTPXClientInstrumentor().instrument()
     # Server spans per /api request: extracts the frontend's traceparent and
     # joins each browser-initiated trace to its server span. /health excluded.
     FastAPIInstrumentor.instrument_app(app, excluded_urls="health")
@@ -518,7 +517,7 @@ def setup_tracing(app) -> bool:
 
 @contextmanager
 def db_span(name: str, attributes: dict | None = None):
-    """Semantic span around a Supabase PostgREST call.
+    """Semantic span around a PostgreSQL statement.
 
     When tracing is off (or OTel is absent) the yielded span is None and the
     body runs unchanged — the API tracer only creates non-recording spans,

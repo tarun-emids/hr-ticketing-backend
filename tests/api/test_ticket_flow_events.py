@@ -3,12 +3,13 @@
 The layered events must appear in execution order under ``hrdesk.flow`` with
 one shared ``request_id`` (the validated client X-Request-ID), an operation
 tag, and NO ticket content (subject/description) anywhere in a record.
-Runs hermetically: FakeSupabase via the shared conftest; no network.
+Runs hermetically against the shared in-memory SQLite pool; no network.
 
 Every operation in the app now emits flow events, so tests scope their
 assertions to the records of THEIR request (by request_id) — lookups like
 GET /api/users that precede the tested action legitimately emit their own.
 """
+
 import json
 import logging
 import re
@@ -23,8 +24,11 @@ def _flow_records(caplog, request_id=None):
     records = [r for r in caplog.records if r.name == "hrdesk.flow"]
     if request_id is not None:
         formatted = [json.loads(JsonLogFormatter().format(r)) for r in records]
-        records = [rec for rec, payload in zip(records, formatted)
-                   if payload.get("request_id") == request_id]
+        records = [
+            rec
+            for rec, payload in zip(records, formatted)
+            if payload.get("request_id") == request_id
+        ]
     return records
 
 
@@ -140,7 +144,8 @@ def test_flow_events_and_middleware_share_the_request_id(api, caplog):
     # caplog spans the whole test (the users lookup above also logs) — scope
     # the comparison to the POST's own middleware record.
     request_lines = [
-        r for r in caplog.records
+        r
+        for r in caplog.records
         if r.name == "hrdesk.request"
         and r.http["path"] == "/api/tickets"
         and r.http["method"] == "POST"

@@ -1,151 +1,197 @@
-"""Shared Supabase plumbing for all repositories.
-
-supabase-py gotchas baked into this module (moved here from the old
-`routers/tickets_core.py`, where every router used to depend on it):
-
-- **Never call `.table("X")` on the result of another `.table("Y")`** — query
-  builders are single-use chains; always start a fresh `client.table(name)`.
-- **PostgREST response shapes vary by supabase-py version** (APIResponse with
-  `.data`, plain lists, single dicts, `(data, count)` tuples). All calls go
-  through `run()`/`rows_of()`/`first_of()`/`unwrap()` here, which normalise
-  every variant. `.execute().data` or `.single()` chains are used nowhere else.
-- Write `.is_("col", None)` (v2 rejects the string `"null"`) for NULL checks.
-
-Every PostgREST execution passes through `run()`, which layers the whole
-outbound-call policy in one place:
-    retry (app/retries.py — reads/idempotent writes replay transient blips)
-      around
-    breaker (app/resilience.py — fails fast while a circuit is open)
-      around
-    span (app/observability.py — db.postgrest.<table>.<op>)
-"""
+"""Shared, parameterized PostgreSQL execution for repositories."""
 
 import re
-from typing import Any, Optional
+import uuid
+from datetime import datetime
+from typing import Any
 
+import psycopg
 from fastapi import HTTPException
-from postgrest.exceptions import APIError
+from psycopg.types.json import Jsonb
+from psycopg_pool import ConnectionPool, PoolTimeout
 
 from app.observability import db_span
-from app.resilience import db_breaker, CircuitOpenError
+from app.resilience import CircuitOpenError, db_breaker
 from app.retries import classify_mode, retry_call
 
 UUID_RE = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 )
+IDENTIFIER_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
+UUID_COLUMNS = frozenset(
+    {"id", "employee_id", "assignee_id", "closed_by", "ticket_id", "author_id", "recipient_id"}
+)
+TIMESTAMP_COLUMNS = frozenset(
+    {"created_at", "updated_at", "first_reply_at", "resolved_at", "read_at"}
+)
 
 
-def _db_failure(e: BaseException) -> bool:
-    """Breaker classification: is this PostgREST outcome an OUTAGE signal?
-
-    Postgres constraint violations (code 23xxx) are the CALLER's fault —
-    the API already answers them 400 — so they are neutral for the breaker;
-    a stream of those must never slowly trip the circuit.
-    Any other APIError plus every non-APIError exception (timeouts,
-    connection errors) is already mapped to 502 today, i.e. the shared
-    dependency failing: those count.
-    """
-    if isinstance(e, APIError):
-        return not str(getattr(e, "code", "") or "").startswith("23")
-    return True
+def as_uuid(value: str | uuid.UUID) -> uuid.UUID:
+    return value if isinstance(value, uuid.UUID) else uuid.UUID(value)
 
 
-def unwrap(res: Any):
-    """Version-proof PostgREST response handling.
-
-    supabase-py variants return APIResponse objects (with .data), plain lists,
-    dicts, or (data, count) tuples depending on installed version — normalise
-    all of them to dict/list JSON data here.
-    """
-    if isinstance(res, tuple) and len(res) == 2:
-        return res[0]
-    if isinstance(res, (list, dict)):
-        return res
-    return getattr(res, "data", None)
+def _adapt_column_value(column: str, value: Any) -> Any:
+    if column in UUID_COLUMNS and isinstance(value, str) and UUID_RE.fullmatch(value):
+        return as_uuid(value)
+    if column in TIMESTAMP_COLUMNS and isinstance(value, str):
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return value
 
 
-def _builder_op(builder) -> str:
-    """Best-effort PostgREST operation name from the builder class (version-
-    dependent surface, hence non-fatal): SelectBuilder -> "select", etc."""
-    name = type(builder).__name__.lower()
-    if name.endswith("builder"):
-        name = name[: -len("builder")]
-    return name or "query"
+def _db_failure(exc: BaseException) -> bool:
+    """Only connection/resource failures indicate that PostgreSQL is down."""
+    if isinstance(exc, PoolTimeout):
+        return True
+    if isinstance(exc, psycopg.Error):
+        state = exc.sqlstate or ""
+        if state == "57014" or state.startswith(("22", "23", "28", "42")):
+            return False
+        return state.startswith(("08", "53", "54", "57", "58")) or isinstance(
+            exc, (psycopg.OperationalError, psycopg.InterfaceError)
+        )
+    return False
 
 
-def _builder_table(builder) -> Optional[str]:
-    """Best-effort table name (attribute names differ across versions)."""
-    for attr in ("table_name", "_table_name", "table", "source"):
-        val = getattr(builder, attr, None)
-        if isinstance(val, str) and val:
-            return val
-    return None
+def run(
+    database: ConnectionPool,
+    sql: str,
+    params: tuple | list = (),
+    *,
+    fetch: str = "all",
+    table: str = "query",
+) -> Any:
+    """Execute one SQL statement through the shared connection pool and breaker."""
+    operation = sql.lstrip().split(None, 1)[0].lower()
 
-
-def run(q):
-
-    """Execute a build under the shared outbound-call policy — the db circuit
-    breaker sits inside the retry loop (each attempt re-contacts the breaker;
-    an OPEN circuit fails fast, no attempt is wasted retrying it) — then map
-    PostgREST errors to HTTP 4xx/5xx-with-detail. The retry mode comes from
-    the terminal builder type (select vs update/delete vs insert) — see
-    app/retries.classify_mode.
-    """
-    op = _builder_op(q)
-    table = _builder_table(q)
-    span_name = f"db.postgrest.{table}.{op}" if table else f"db.postgrest.{op}"
-    attrs = {"db.system": "postgres", "db.operation": op}
-    if table:
-        attrs["db.postgrest.table"] = table
+    def execute():
+        with database.connection() as connection:
+            cursor = connection.execute(sql, params)
+            if fetch == "all":
+                return cursor.fetchall()
+            if fetch == "one":
+                return cursor.fetchone()
+            return cursor.rowcount
 
     try:
-        with db_span(span_name, attrs):
-            return unwrap(
-                retry_call(
-                    lambda: db_breaker.call(q.execute, is_failure=_db_failure),
-                    mode=classify_mode(q),
-                )
+        with db_span(
+            f"db.postgresql.{table}.{operation}",
+            {"db.system": "postgresql", "db.operation": operation, "db.sql.table": table},
+        ):
+            return retry_call(
+                lambda: db_breaker.call(execute, is_failure=_db_failure),
+                mode=classify_mode(sql),
             )
     except CircuitOpenError:
         raise HTTPException(
             status_code=503,
             detail="Database is temporarily unavailable — try again shortly.",
         ) from None
-    except APIError as e:
-        detail = getattr(e, "message", None) or str(e)
-        code = str(getattr(e, "code", "") or "")
-        status = 400 if code.startswith("23") else 502
+    except (psycopg.Error, PoolTimeout) as exc:
+        state = getattr(exc, "sqlstate", None) or ""
+        if state.startswith(("23", "22")):
+            raise HTTPException(
+                status_code=400,
+                detail="Database rejected the write.",
+            ) from exc
         raise HTTPException(
-            status_code=status,
-            detail=f"Database rejected the write: {detail}",
-        ) from e
+            status_code=502,
+            detail="Database operation failed — try again shortly.",
+        ) from exc
 
 
-def rows_of(q) -> list:
-    data = run(q)
-    if isinstance(data, dict):
-        return [data]
-    return data or []
+def rows_of(database: ConnectionPool, sql: str, params: tuple | list = (), *, table: str) -> list:
+    return run(database, sql, params, table=table)
 
 
-def first_of(q) -> Optional[dict]:
-    result = rows_of(q)
-    return result[0] if result else None
+def first_of(database: ConnectionPool, sql: str, params: tuple | list = (), *, table: str):
+    return run(database, sql, params, fetch="one", table=table)
 
 
-class SupabaseRepository:
-    """Base for table-backed repositories.
+def insert_row(
+    database: ConnectionPool,
+    table: str,
+    row: dict,
+    *,
+    json_columns: tuple[str, ...] = (),
+) -> dict:
+    row = dict(row)
+    row.setdefault("id", str(uuid.uuid4()))
+    columns = tuple(row)
+    if not IDENTIFIER_RE.fullmatch(table) or any(
+        not IDENTIFIER_RE.fullmatch(column) for column in columns
+    ):
+        raise ValueError("Invalid SQL identifier")
+    values = tuple(
+        Jsonb(row[column]) if column in json_columns else _adapt_column_value(column, row[column])
+        for column in columns
+    )
+    placeholders = ", ".join(["%s"] * len(columns))
+    names = ", ".join(columns)
+    return first_of(
+        database,
+        f"INSERT INTO {table} ({names}) VALUES ({placeholders}) RETURNING *",
+        values,
+        table=table,
+    )
 
-    Holds the injected client; subclasses expose intent-revealing query
-    methods. Every method builds a FRESH `self._client.table(name)` chain —
-    see the module docstring for why a builder must never be reused.
-    """
 
-    TABLE_NAME: str = ""
+def insert_many_rows(
+    database: ConnectionPool,
+    table: str,
+    rows: list[dict],
+    *,
+    json_columns: tuple[str, ...] = (),
+) -> list[dict]:
+    if not rows:
+        return []
+    prepared = [dict(row) for row in rows]
+    for row in prepared:
+        row.setdefault("id", str(uuid.uuid4()))
+    columns = tuple(prepared[0])
+    if not IDENTIFIER_RE.fullmatch(table) or any(
+        not IDENTIFIER_RE.fullmatch(column) for column in columns
+    ):
+        raise ValueError("Invalid SQL identifier")
+    values_list = []
+    for row in prepared:
+        if tuple(row) != columns:
+            raise ValueError("Bulk insert rows must have identical columns in identical order")
+        values_list.append(
+            tuple(
+                Jsonb(row[column])
+                if column in json_columns
+                else _adapt_column_value(column, row[column])
+                for column in columns
+            )
+        )
+    row_placeholders = f"({', '.join(['%s'] * len(columns))})"
+    values_placeholders = ", ".join([row_placeholders] * len(values_list))
+    flat_values = tuple(value for row_values in values_list for value in row_values)
+    names = ", ".join(columns)
+    return rows_of(
+        database,
+        f"INSERT INTO {table} ({names}) VALUES {values_placeholders} RETURNING id",
+        flat_values,
+        table=table,
+    )
 
-    def __init__(self, client):
-        # Any supabase-like client works here (tests inject FakeSupabase).
-        self._client = client
 
-    def table(self):
-        return self._client.table(self.TABLE_NAME)
+def update_row(database: ConnectionPool, table: str, row_id: str, patch: dict) -> None:
+    if not patch:
+        return
+    columns = tuple(patch)
+    if not IDENTIFIER_RE.fullmatch(table) or any(
+        not IDENTIFIER_RE.fullmatch(column) for column in columns
+    ):
+        raise ValueError("Invalid SQL identifier")
+    assignments = ", ".join(f"{column} = %s" for column in columns)
+    params = tuple(_adapt_column_value(column, value) for column, value in patch.items()) + (
+        as_uuid(row_id),
+    )
+    run(
+        database,
+        f"UPDATE {table} SET {assignments} WHERE id = %s",
+        params,
+        fetch="none",
+        table=table,
+    )

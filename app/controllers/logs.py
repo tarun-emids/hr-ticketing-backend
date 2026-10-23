@@ -42,9 +42,7 @@ def ingest_frontend_events(
     if not svc.allow(client_ip):
         # Safe diagnostic only: the threshold — no payload contents; the
         # hop's own request_id arrives via the record formatters.
-        flow_warning("logs.ingest.rejected",
-                     operation="logs.ingest",
-                     limit_per_minute=60)
+        flow_warning("logs.ingest.rejected", operation="logs.ingest", limit_per_minute=60)
         raise HTTPException(status_code=429, detail="Too many log events; slow down.")
     try:
         return {"accepted": svc.ingest(payload)}

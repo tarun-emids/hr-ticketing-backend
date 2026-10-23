@@ -30,7 +30,6 @@ from typing import Optional
 
 from fastapi import HTTPException
 
-from app.config import SIGNED_URL_TTL
 from app.models import ticket_out
 from app.observability import flow_event
 from app.repositories.attachment_storage import AttachmentStorageRepository
@@ -87,10 +86,13 @@ class TicketService:
         row = self._row(tid)
         return ticket_out(row, self._tickets.list_replies(row["id"]))
 
-    def _patch_and_return(self, tid: str, patch: dict) -> dict:
+    def _patch_and_return(self, tid: str, patch: dict, *, operation: Optional[str] = None) -> dict:
         """Patch the ticket row (trigger bumps updated_at), return the full ticket."""
         row = self._row(tid)
-        self._tickets.update_ticket(row["id"], patch)
+        if operation is None:
+            self._tickets.update_ticket(row["id"], patch)
+        else:
+            self._tickets.update_ticket(row["id"], patch, operation=operation)
         return self._full(tid)
 
     # -- reads --------------------------------------------------------------
@@ -184,7 +186,7 @@ class TicketService:
             "priority": priority,
             "status": "Open",
         }
-        new_row = self._tickets.insert_ticket(row)
+        new_row = self._tickets.insert_ticket(row, operation="tickets.create")
         # Notify AFTER the insert; safe_notify swallows any notification failure.
         self._notifier.safe_notify(
             new_row, EV_CREATED, employee, created_recipients(self._notifier.agent_ids())
@@ -212,12 +214,15 @@ class TicketService:
         )
 
         now = self._now()
-        self._tickets.insert_reply({
-            "ticket_id": row["id"],
-            "author_id": author_id,
-            "author_role": role,
-            "body": text.strip(),
-        }, operation="tickets.reply")
+        self._tickets.insert_reply(
+            {
+                "ticket_id": row["id"],
+                "author_id": author_id,
+                "author_role": role,
+                "body": text.strip(),
+            },
+            operation="tickets.reply",
+        )
 
         patch: dict = {}
         if role == "agent":
@@ -229,7 +234,7 @@ class TicketService:
             patch["status"] = "Waiting on Employee"
 
         if patch:
-            self._tickets.update_ticket(row["id"], patch)
+            self._tickets.update_ticket(row["id"], patch, operation="tickets.reply")
         self._notifier.safe_notify(
             row,
             EV_REPLY,
@@ -272,7 +277,7 @@ class TicketService:
             patch["resolved_at"] = None
             patch["closed_by"] = None
         # Waiting on Employee: no timestamp changes
-        result = self._patch_and_return(tid, patch)
+        result = self._patch_and_return(tid, patch, operation="tickets.status")
         self._notifier.safe_notify(
             result,
             EV_STATUS,
@@ -283,10 +288,10 @@ class TicketService:
         return result
 
     def set_priority(self, tid: str, priority: str) -> dict:
-        return self._patch_and_return(tid, {"priority": priority})
+        return self._patch_and_return(tid, {"priority": priority}, operation="tickets.priority")
 
     def set_category(self, tid: str, category: str) -> dict:
-        return self._patch_and_return(tid, {"category": category})
+        return self._patch_and_return(tid, {"category": category}, operation="tickets.category")
 
     # -- assignment ---------------------------------------------------------
 
@@ -311,27 +316,30 @@ class TicketService:
                 assignee_id=assignee_id,
             )
 
-        # Capture the PRE-update assignee: the decision "is this an actual
-        # reassignment" must not depend on state written by our own update
-        # (PostgREST returns snapshots, but the comparison itself is clearer
-        # and unsafe-alias-proof when captured before the patch).
+        # Capture before updating so the reassignment decision cannot depend
+        # on state written by our own update.
         pre_assignee = row.get("assignee_id")
         has_agent_turn = self._tickets.has_agent_reply(row["id"])
 
         now = self._now()
         if assignee_id and not row.get("first_reply_at") and not has_agent_turn:
-            self._tickets.insert_reply({
-                "ticket_id": row["id"],
-                "author_id": assignee_id,
-                "author_role": "agent",
-                "body": AGENT_PICKUP_TEXT,
-            }, operation="tickets.assign")
+            self._tickets.insert_reply(
+                {
+                    "ticket_id": row["id"],
+                    "author_id": assignee_id,
+                    "author_role": "agent",
+                    "body": AGENT_PICKUP_TEXT,
+                },
+                operation="tickets.assign",
+            )
             patch: dict = {"assignee_id": assignee_id, "first_reply_at": now}
             if row["status"] == "Open":
                 patch["status"] = "In Progress"
-            result = self._patch_and_return(row["ref"], patch)
+            result = self._patch_and_return(row["ref"], patch, operation="tickets.assign")
         else:
-            result = self._patch_and_return(row["ref"], {"assignee_id": assignee_id})
+            result = self._patch_and_return(
+                row["ref"], {"assignee_id": assignee_id}, operation="tickets.assign"
+            )
 
         if pre_assignee != assignee_id:
             self._notifier.safe_notify(
@@ -397,14 +405,18 @@ class TicketService:
             ticket_ref=row.get("ref"),
         )
 
-        return self._patch_and_return(
+        updated = self._patch_and_return(
             tid,
             {
                 "attachment_path": path,
                 "attachment_name": filename,
                 "attachment_size": len(data),
             },
+            operation="tickets.attachment_upload",
         )
+        if row.get("attachment_path"):
+            self._storage.remove(row["attachment_path"])
+        return updated
 
     def attachment_url(self, tid: str, ttl: int) -> dict:
         """GET /tickets/{id}/attachment — short-lived signed URL for the file.
@@ -418,11 +430,11 @@ class TicketService:
             "attachment.storage.url_signed",
             operation="tickets.attachment_url",
             ticket_ref=row.get("ref"),
-            expires_in_seconds=SIGNED_URL_TTL,
+            expires_in_seconds=self._storage.clamp_ttl(ttl),
         )
         return {
             "name": row.get("attachment_name"),
             "size": row.get("attachment_size"),
             "url": url,
-            "expiresInSeconds": SIGNED_URL_TTL,
+            "expiresInSeconds": self._storage.clamp_ttl(ttl),
         }

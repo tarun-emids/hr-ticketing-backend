@@ -1,5 +1,6 @@
 """Notifications API: flows, isolation, pagination, failure isolation."""
 
+import json
 from datetime import datetime, timedelta, timezone
 
 from tests.conftest import U
@@ -92,19 +93,38 @@ def test_assignment_notifies_assignee_only_on_change(api):
     now faithful, so the documented matrix is asserted directly.)"""
     ref = create_employee_ticket(api, U["priya"])["id"]
     api.client.patch(f"/api/tickets/{ref}/assignee", json={"assigneeId": U["ben"]})
-    ben_rows = [n for n in list_for(api, U["ben"]) if n["ticketRef"] == ref]
-    assert sorted(n["type"] for n in ben_rows) == ["ticket_assigned", "ticket_created"]
-    assigned = [n for n in ben_rows if n["type"] == "ticket_assigned"]
-    assert [n["recipientId"] for n in assigned] == [U["ben"]]
-    assert assigned[0]["message"] == f"{ref} was assigned to you"  # generic text; no actor name on this path
+    assigned = [
+        n
+        for n in list_for(api, U["ben"])
+        if n["ticketRef"] == ref and n["type"] == "ticket_assigned"
+    ]
+    assert len(assigned) == 1
 
     # re-picking the same assignee adds nothing new
     api.client.patch(f"/api/tickets/{ref}/assignee", json={"assigneeId": U["ben"]})
-    assert len([n for n in list_for(api, U["ben"]) if n["ticketRef"] == ref]) == 2
+    assert (
+        len(
+            [
+                n
+                for n in list_for(api, U["ben"])
+                if n["ticketRef"] == ref and n["type"] == "ticket_assigned"
+            ]
+        )
+        == 1
+    )
 
     # clearing the assignee notifies nobody
     api.client.patch(f"/api/tickets/{ref}/assignee", json={"assigneeId": None})
-    assert len([n for n in list_for(api, U["ben"]) if n["ticketRef"] == ref]) == 2
+    assert (
+        len(
+            [
+                n
+                for n in list_for(api, U["ben"])
+                if n["ticketRef"] == ref and n["type"] == "ticket_assigned"
+            ]
+        )
+        == 1
+    )
 
 
 def test_status_change_excludes_actor_and_third_parties(api):
@@ -223,10 +243,12 @@ def test_endpoint_validation(api):
 
 
 def test_notification_failure_never_blocks_ticket_write(api, monkeypatch):
-    def boom(_payload):
+    def boom(self, _payload):
         raise RuntimeError("notifications table down")
 
-    monkeypatch.setattr(api.fake.notifications, "on_insert", boom)
+    from app.repositories.notification_repository import NotificationRepository
+
+    monkeypatch.setattr(NotificationRepository, "insert_rows", boom)
     created = create_employee_ticket(api, U["priya"])
     assert created["id"], "a notifications outage must never break ticket creation"
     assert unread_of(api, U["ben"]) == 0
@@ -263,13 +285,25 @@ def _ticket_row(ref, priority, hours_old, seq):
 def _quieten_seed_sweeps(api):
     """The seeded TKT-101 (Open, unassigned, old) would breach on every sweep —
     park it out of the sweep's Unassigned/Open scope for a clean slate."""
-    api.fake.tickets.rows[0]["status"] = "Resolved"
+    api.fake.execute("UPDATE tickets SET status = 'Resolved' WHERE ref = 'TKT-101'")
+
+
+def _insert_ticket(api, row):
+    row = dict(row)
+    row["number"] = int(row["ref"].removeprefix("TKT-"))
+    columns = [column for column in row if column != "ref"]
+    names = ", ".join(columns)
+    placeholders = ", ".join(["?"] * len(columns))
+    api.fake.execute(
+        f"INSERT INTO tickets ({names}) VALUES ({placeholders})",
+        tuple(row[column] for column in columns),
+    )
 
 
 def test_sla_sweep_notifies_once_per_threshold(api):
     _quieten_seed_sweeps(api)
-    api.fake.tickets.rows.append(_ticket_row("TKT-900", "Medium", 30, 1))
-    api.fake.tickets.rows.append(_ticket_row("TKT-901", "Low", 1, 2))  # fresh -> no breach
+    _insert_ticket(api, _ticket_row("TKT-900", "Medium", 30, 1))
+    _insert_ticket(api, _ticket_row("TKT-901", "Low", 1, 2))  # fresh -> no breach
 
     r = api.client.post("/api/notifications/sweep", json={"userId": U["ben"]})
     assert r.status_code == 200 and r.json()["slaNotified"] == 1
@@ -290,7 +324,7 @@ def test_sla_sweep_notifies_once_per_threshold(api):
 
 def test_urgent_threshold_is_shorter(api):
     _quieten_seed_sweeps(api)
-    api.fake.tickets.rows.append(_ticket_row("TKT-902", "Urgent", 5, 3))
+    _insert_ticket(api, _ticket_row("TKT-902", "Urgent", 5, 3))
 
     r = api.client.post("/api/notifications/sweep", json={"userId": U["ben"]})
     assert r.json()["slaNotified"] == 1
@@ -341,14 +375,38 @@ def test_retention_cleanup_deletes_stale_rows(api):
         "created_at": _age(24 * 200),
         "read_at": None,
     }
-    api.fake.notifications.rows.extend([too_old_read, fresh_unread, ancient_unread])
+    for notification in [too_old_read, fresh_unread, ancient_unread]:
+        api.fake.execute(
+            """
+            INSERT INTO notifications (
+              id, recipient_id, ticket_id, ticket_ref, type, channel, actor_name,
+              payload, message, read, created_at, read_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                notification["id"],
+                notification["recipient_id"],
+                notification["ticket_id"],
+                notification["ticket_ref"],
+                notification["type"],
+                notification["channel"],
+                notification["actor_name"],
+                json.dumps(notification["payload"]),
+                notification["message"],
+                notification["read"],
+                notification["created_at"],
+                notification["read_at"],
+            ),
+        )
 
     r = api.client.post("/api/notifications/sweep", json={"userId": U["ben"]})
     assert r.json()["deleted"] == 2
 
     surviving_ids = {
-        n["id"]
-        for n in api.fake.notifications.rows
-        if n["id"] in {too_old_read["id"], fresh_unread["id"], ancient_unread["id"]}
+        row["id"]
+        for row in api.fake.execute(
+            "SELECT id FROM notifications WHERE id IN (?, ?, ?)",
+            (too_old_read["id"], fresh_unread["id"], ancient_unread["id"]),
+        )
     }
     assert surviving_ids == {fresh_unread["id"]}

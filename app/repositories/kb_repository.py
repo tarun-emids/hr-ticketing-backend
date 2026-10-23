@@ -1,31 +1,82 @@
-"""Knowledge base document metadata (public.kb_documents).
+"""Knowledge-base metadata and PostgreSQL-backed PDF records."""
 
-Metadata only — the PDF bytes live in the private `knowledge-base` storage
-bucket (see KbStorageRepository). Repositories stay role-agnostic: callers
-pass the audience pool(s) the viewer may read, which the KbService derives
-from the viewer's role resolved from public.users.
-"""
 from typing import Optional, Sequence
 
-from app.repositories.base import SupabaseRepository, first_of, rows_of
+from psycopg_pool import ConnectionPool
+
+from app.repositories.base import first_of, rows_of, run
+
+_DOCUMENT_COLUMNS = (
+    "slug, ref, title, category, audience, summary, keywords, search_text, "
+    "file_path, file_size, page_count, version, effective_date, updated_at"
+)
 
 
-class KbRepository(SupabaseRepository):
-    TABLE_NAME = "kb_documents"
+class KbRepository:
+    def __init__(self, database: ConnectionPool):
+        self._database = database
 
-    def list_by_audiences(
-        self, audiences: Sequence[str], limit: int = 200
-    ) -> list[dict]:
+    def list_by_audiences(self, audiences: Sequence[str], limit: int = 200) -> list[dict]:
         """All documents in the viewer's pools, newest-refresh first."""
         if not audiences:
             return []
+        placeholders = ", ".join(["%s"] * len(audiences))
         return rows_of(
-            self.table()
-            .select("*")
-            .in_("audience", list(audiences))
-            .order("updated_at", desc=True)
-            .limit(limit)
+            self._database,
+            f"SELECT {_DOCUMENT_COLUMNS} FROM kb_documents "
+            f"WHERE audience IN ({placeholders}) ORDER BY updated_at DESC LIMIT %s",
+            (*audiences, limit),
+            table="kb_documents",
         )
 
     def get_by_slug(self, slug: str) -> Optional[dict]:
-        return first_of(self.table().select("*").eq("slug", slug).limit(1))
+        return first_of(
+            self._database,
+            f"SELECT {_DOCUMENT_COLUMNS} FROM kb_documents WHERE slug = %s LIMIT 1",
+            (slug,),
+            table="kb_documents",
+        )
+
+    def has_pdf(self, slug: str) -> bool:
+        row = first_of(
+            self._database,
+            "SELECT file_data IS NOT NULL AS has_pdf FROM kb_documents WHERE slug = %s",
+            (slug,),
+            table="kb_documents",
+        )
+        return bool(row and row["has_pdf"])
+
+    def upsert_document(self, row: dict) -> None:
+        columns = (
+            "slug",
+            "ref",
+            "title",
+            "category",
+            "audience",
+            "summary",
+            "keywords",
+            "search_text",
+            "file_path",
+            "file_size",
+            "page_count",
+            "version",
+            "effective_date",
+            "file_data",
+        )
+        names = ", ".join(columns)
+        placeholders = ", ".join(["%s"] * len(columns))
+        updates = ", ".join(
+            f"{column} = EXCLUDED.{column}"
+            for column in columns
+            if column not in {"slug", "file_data"}
+        )
+        run(
+            self._database,
+            f"INSERT INTO kb_documents ({names}) VALUES ({placeholders}) "
+            f"ON CONFLICT (slug) DO UPDATE SET {updates}, "
+            "file_data = COALESCE(EXCLUDED.file_data, kb_documents.file_data), "
+            "updated_at = now()",
+            tuple(row.get(column) for column in columns),
+            fetch="none",
+            table="kb_documents",
+        )

@@ -1,12 +1,13 @@
-"""Knowledge base endpoints — visibility gates, search, signed URLs.
+"""Knowledge base endpoints — visibility gates, search, signed PostgreSQL URLs.
 
-Runs against the offline FakeSupabase seeded with 3 employee + 2 HR policy
+Runs against the offline SQLite pool seeded with 3 employee + 2 HR policy
 documents (tests/conftest.py: _SEED_KB). The gate rules under test:
   - the viewer's role always comes from public.users (viewerId), never trust;
   - employee sees the employee pool, agents/admin see both pools;
   - out-of-pool -> 403, unknown slug -> 404, bad viewer -> 422/404;
   - view URLs carry no download transform; download URLs carry the filename.
 """
+
 from tests.conftest import U
 
 
@@ -113,36 +114,46 @@ def test_view_url_has_no_download_transform(api):
     assert r.status_code == 200
     body = r.json()
     assert body["download"] is False
-    assert body["url"].startswith("https://fake.supabase.co/storage/v1/object/sign/knowledge-base/pdf/")
+    assert body["url"].startswith("http://testserver/api/kb/pdf/leave-and-time-off-policy?")
     assert body["fileSize"] == 12345 and body["pages"] == 7
-    # the fake records exactly what was asked of the storage client
-    assert api.fake.last_signed_options is None
-    assert api.fake.last_signed_ttl == 3600
+    response = api.client.get(body["url"])
+    assert response.status_code == 200
+    assert response.content.startswith(b"%PDF-1.4")
+    assert response.headers["content-disposition"].startswith("inline;")
 
 
 def test_download_url_carries_suggested_filename(api):
     r = _get(
-        api.client, "/kb/leave-and-time-off-policy/file",
-        viewerId=U["priya"], download=True,
+        api.client,
+        "/kb/leave-and-time-off-policy/file",
+        viewerId=U["priya"],
+        download=True,
     )
     assert r.status_code == 200
-    assert api.fake.last_signed_options == {"download": "Leave and Time Off Policy.pdf"}
     assert r.json()["download"] is True
+    response = api.client.get(r.json()["url"])
+    assert response.status_code == 200
+    assert response.headers["content-disposition"].startswith("attachment;")
+    assert "Leave%20and%20Time%20Off%20Policy.pdf" in response.headers["content-disposition"]
 
 
 def test_ttl_is_clamped_into_storage_call(api):
     r = _get(api.client, "/kb/hybrid-work-policy/file", viewerId=U["priya"], ttl="999999")
     assert r.status_code == 200
-    assert api.fake.last_signed_ttl == 86400  # max 24 h
     assert r.json()["expiresInSeconds"] == 86400
     r = _get(api.client, "/kb/hybrid-work-policy/file", viewerId=U["priya"], ttl="5")
-    assert api.fake.last_signed_ttl == 60  # min 60 s
+    assert r.status_code == 200
+    assert r.json()["expiresInSeconds"] == 60
 
 
 def test_agent_download_path_signs_hr_file(api):
     r = _get(
-        api.client, "/kb/exit-process-sop/file",
-        viewerId=U["alicia"], download=True,
+        api.client,
+        "/kb/exit-process-sop/file",
+        viewerId=U["alicia"],
+        download=True,
     )
     assert r.status_code == 200
-    assert api.fake.last_signed_options == {"download": "Exit Process SOP.pdf"}
+    response = api.client.get(r.json()["url"])
+    assert response.status_code == 200
+    assert "Exit%20Process%20SOP.pdf" in response.headers["content-disposition"]

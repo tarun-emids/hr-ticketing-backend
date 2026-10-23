@@ -25,6 +25,7 @@ Design (carried from the original full-stack implementation, evolved):
 Pure rules (pools, tokenising, scoring, keyword splitting) are module-level
 functions; the service class is the only place that talks to repositories.
 """
+
 import re
 from typing import Optional
 
@@ -33,7 +34,7 @@ from fastapi import HTTPException
 from app.models import kb_doc_out
 from app.repositories.base import UUID_RE
 from app.repositories.kb_repository import KbRepository
-from app.repositories.kb_storage import KbStorageRepository, safe_download_name
+from app.repositories.kb_storage import KbStorageRepository
 from app.repositories.user_repository import UserRepository
 
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,80}$")
@@ -46,9 +47,9 @@ ROLE_POOLS: dict[str, tuple[str, ...]] = {
 }
 
 SEARCH_RESULT_LIMIT = 3  # top-N matches returned for a query
-LIST_LIMIT = 50          # unwalled catalogue page
-POPULAR_LIMIT = 8        # dashboard suggestion strip
-POOL_FETCH_LIMIT = 200   # full metadata scan cap (≤ few hundred docs)
+LIST_LIMIT = 50  # unwalled catalogue page
+POPULAR_LIMIT = 8  # dashboard suggestion strip
+POOL_FETCH_LIMIT = 200  # full metadata scan cap (≤ few hundred docs)
 
 
 class KbNotFound(HTTPException):
@@ -72,6 +73,7 @@ class UnknownViewer(HTTPException):
 # ---------------------------------------------------------------------------
 # Pure rules (unit-tested directly)
 # ---------------------------------------------------------------------------
+
 
 def pools_for(role: Optional[str]) -> list[str]:
     """The audience pools a role may read; unknown roles read nothing."""
@@ -136,6 +138,7 @@ def search_rows(rows: list[dict], q: str) -> list[dict]:
 # ---------------------------------------------------------------------------
 # Service
 # ---------------------------------------------------------------------------
+
 
 class KbService:
     def __init__(
@@ -212,10 +215,10 @@ class KbService:
         viewer = self._viewer(viewer_id)
         row = self._doc_or_gate(slug, viewer)
         url = self._pdfs.signed_pdf_url(
-            row["file_path"],
+            row["slug"],
             ttl,
             download=download,
-            download_name=safe_download_name(row.get("title")),
+            download_name=row.get("title"),
         )
         return {
             "slug": row["slug"],

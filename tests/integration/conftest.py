@@ -1,12 +1,9 @@
-"""Live integration harness — runs the real backend against the real
-Supabase project configured in backend/.env.
+"""Live integration harness — runs against DATABASE_URL from .env.
 
 These tests create real tickets/replies/attachments, so every test declares
-what it created (refs + storage paths) and the fixture deletes them again in
+what it created (refs + attachment paths) and the fixture deletes them again in
 teardown. Runs only when opted in: pytest -m integration
 """
-
-from contextlib import suppress
 
 import pytest
 from fastapi.testclient import TestClient
@@ -14,45 +11,47 @@ from fastapi.testclient import TestClient
 from app import config as cfg
 from app.main import app as real_app
 
-BUCKET = cfg.ATTACHMENT_BUCKET
-
 
 @pytest.fixture()
 def live():
-    """Real TestClient + Supabase handle with automatic cleanup."""
+    """Real TestClient with automatic database cleanup."""
     client = TestClient(real_app)
 
     health = client.get("/health")
     assert health.status_code == 200
 
-    users = client.get("/api/users").json()
+    users_response = client.get("/api/users")
+    assert users_response.status_code == 200, (
+        "Could not read users from PostgreSQL; check DATABASE_URL and database availability."
+    )
+    users = users_response.json()
+    assert isinstance(users, list), "PostgreSQL /api/users returned an invalid response."
     if len(users) < 7:
-        pytest.skip("Supabase users not seeded — run backend/schema.sql first")
+        pytest.skip("PostgreSQL users not seeded — run schema.sql first")
 
     employees = [u for u in users if u["role"] == "employee"]
     agents = [u for u in users if u["role"] == "agent"]
     if not employees or not agents:
-        pytest.skip("Supabase seed lacks employee/agent users")
+        pytest.skip("PostgreSQL seed lacks employee/agent users")
 
     return {
         "client": client,
         "employees": employees,
         "agents": agents,
         "refs": [],  # ticket refs to delete in teardown
-        "paths": [],  # storage paths to delete in teardown
+        "paths": [],  # attachment paths to delete in teardown
     }
 
 
 @pytest.fixture()
 def cleanup(live):
     yield live
-    sb = cfg.get_client()
-    for path in live["paths"]:
-        with suppress(Exception):
-            sb.storage.from_(BUCKET).remove([path])
-    for ref in live["refs"]:
-        with suppress(Exception):
-            sb.table("tickets").delete().eq("ref", ref).execute()
+    database = cfg.get_database()
+    with database.connection() as connection:
+        for path in live["paths"]:
+            connection.execute("DELETE FROM attachments WHERE path = %s", (path,))
+        for ref in live["refs"]:
+            connection.execute("DELETE FROM tickets WHERE ref = %s", (ref,))
 
 
 def create_ticket(

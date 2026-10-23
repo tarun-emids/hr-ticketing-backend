@@ -1,12 +1,8 @@
-"""Auth endpoints. The GoTrue grant + account join live in AuthService.
+"""Authentication endpoints backed by provisioned PostgreSQL password hashes.
 
-Observability: the login operation emits ``auth.login.started/failed/completed``
-(hrdesk.flow). NEVER logged: the email, the password, GoTrue tokens, or any
-credential material — diagnosis uses only the mapped HTTP status on the
-failed record (401 wrong credentials, 403 unconfirmed account / no account
-row, 502 authentication service unreachable) and the exception class. On
-success only the verified user's UUID is attached.
+Login observability includes no email, password, or credential material.
 """
+
 from fastapi import APIRouter, Depends
 
 from app.deps import get_auth_service
@@ -19,8 +15,7 @@ router = APIRouter(tags=["auth"])
 
 @router.post("/auth/login")
 def login(payload: LoginRequest, svc: AuthService = Depends(get_auth_service)):
-    """POST /api/auth/login — real password sign-in (GoTrue password grant,
-    then resolve the public.users row for the app-level id/name/role)."""
+    """POST /api/auth/login — verify credentials and return the app user."""
     with flow_operation(
         "auth.login",
         operation="auth.login",
@@ -28,5 +23,5 @@ def login(payload: LoginRequest, svc: AuthService = Depends(get_auth_service)):
         path="/api/auth/login",
     ) as op:
         result = svc.login(payload.email, payload.password)
-        op["user_id"] = (result.get("user") or {}).get("id")
+        op["user_id"] = result["user"]["id"]
         return result

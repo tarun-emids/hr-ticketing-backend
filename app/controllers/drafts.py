@@ -1,13 +1,13 @@
 """Employee ticket drafts: CRUD, submit, attachments. Rules live in
 DraftService (ownership scoping, submit validation, attachment swap).
-
 Observability: every endpoint emits the ``drafts.*`` started/completed/failed
 trio (hrdesk.flow) — ``drafts.attachment.*`` for the attachment routes. Safe
 metadata only: employee/draft uuids, which optional patch fields were set
 (field NAMES from the validated DTO, never values), attachment sizes and
 content types. Draft subjects/descriptions(/file names) are never logged.
 """
-from fastapi import APIRouter, Depends, UploadFile
+
+from fastapi import APIRouter, Depends, Request, UploadFile
 
 from app.config import SIGNED_URL_TTL
 from app.deps import get_draft_service
@@ -143,8 +143,11 @@ def upload_draft_attachment(
         content_type=file.content_type,
     ):
         return svc.upload_attachment(
-            draft_id, employeeId, filename=file.filename,
-            content_type=file.content_type, data=data,
+            draft_id,
+            employeeId,
+            filename=file.filename,
+            content_type=file.content_type,
+            data=data,
         )
 
 
@@ -169,12 +172,10 @@ def delete_draft_attachment(
 def draft_attachment_url(
     draft_id: str,
     employeeId: str,
+    request: Request,
     ttl: int = SIGNED_URL_TTL,
     svc: DraftService = Depends(get_draft_service),
 ):
-    """Signed URL for the stored draft attachment — the URL itself (it embeds
-    a one-time token) and the attachment NAME are never logged, only expiry
-    metadata."""
     with flow_operation(
         "drafts.attachment.url",
         operation="drafts.attachment_url",
@@ -182,8 +183,8 @@ def draft_attachment_url(
         path=f"/api/drafts/{draft_id}/attachment",
         employee_id=employeeId,
         draft_id=draft_id,
-    ) as op:
+    ) as event:
         result = svc.attachment_url(draft_id, employeeId, ttl)
-        op["expires_in"] = result.get("expiresInSeconds")
-        op["size"] = result.get("size")
+        result["url"] = f"{str(request.base_url).rstrip('/')}{result['url']}"
+        event["expires_in_seconds"] = result["expiresInSeconds"]
         return result

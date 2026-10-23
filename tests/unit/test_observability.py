@@ -14,6 +14,7 @@ import logging
 import re
 import sys
 import time
+from contextlib import contextmanager
 from types import SimpleNamespace
 
 import pytest
@@ -25,15 +26,15 @@ from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-from postgrest.exceptions import APIError
+from psycopg.errors import ForeignKeyViolation
 
 from app import config as app_config
 from app.observability import (
     ConsoleLogFormatter,
     JsonLogFormatter,
     RequestLogMiddleware,
-    _ExportErrorRateFilter,
     _current_span_ids,
+    _ExportErrorRateFilter,
     background_span,
     db_span,
     flow_event,
@@ -74,10 +75,18 @@ def _global_provider():
 # Structured logging
 # ---------------------------------------------------------------------------
 
+
 def _record(msg, level=logging.INFO, exc_info=None, http=None, name="hrdesk.request"):
     rec = logging.LogRecord(
-        name, level, "path/to/tests.py", 1, msg, None, exc_info,
-        func=None, sinfo=None,
+        name,
+        level,
+        "path/to/tests.py",
+        1,
+        msg,
+        None,
+        exc_info,
+        func=None,
+        sinfo=None,
     )
     if http is not None:
         rec.http = http  # mirror logging.info(msg, extra={"http": ...})
@@ -158,7 +167,7 @@ def test_json_explicit_http_trace_fields_win_over_context():
             http={
                 "source": "frontend",
                 "correlation_id": "req-1234567890",
-                "trace_id": "a" * 32,          # original browser operation trace
+                "trace_id": "a" * 32,  # original browser operation trace
                 "span_id": "b" * 16,
             },
         )
@@ -175,6 +184,7 @@ def test_json_explicit_http_trace_fields_win_over_context():
 # Sensitive-data policy: query strings never reach emitted output
 # ---------------------------------------------------------------------------
 
+
 def test_url_query_strings_are_stripped_from_emitted_lines():
     """httpx-style lines include the FULL request URL — everything after '?'
     must be gone, while the path (and precious correlation metadata) remains.
@@ -182,16 +192,16 @@ def test_url_query_strings_are_stripped_from_emitted_lines():
     without its quotes.)
     """
     line = (
-        'HTTP Request: GET https://example.supabase.co/rest/v1/users'
+        "HTTP Request: GET https://example.supabase.co/rest/v1/users"
         '?select=*&id=eq.00000000-0000-0000-0000-000000000001&limit=1 "HTTP/2 200 OK"'
     )
     rec = _record(line, name="httpx")
     for formatted in (JsonLogFormatter().format(rec), ConsoleLogFormatter().format(rec)):
-        assert "?select" not in formatted               # no query string at all
-        assert "id=eq.00000000" not in formatted        # selector value gone
+        assert "?select" not in formatted  # no query string at all
+        assert "id=eq.00000000" not in formatted  # selector value gone
         assert "00000000-0000-0000-0000-000000000001" not in formatted
         assert "https://example.supabase.co/rest/v1/users" in formatted  # path kept
-        assert "HTTP/2 200 OK" in formatted             # status metadata kept
+        assert "HTTP/2 200 OK" in formatted  # status metadata kept
 
 
 def test_sensitive_query_params_redacted_in_emitted_output():
@@ -209,9 +219,9 @@ def test_api_query_params_never_reach_middleware_logs(id_app, caplog):
         res = id_app.client.get("/ping?employeeId=00000000-0000-0000-0000-000000000009&q=1")
     assert res.status_code == 200
     rec = _request_log_records(caplog)[0]
-    assert rec.http["path"] == "/ping"                    # path only, never query
+    assert rec.http["path"] == "/ping"  # path only, never query
     formatted = JsonLogFormatter().format(rec)
-    assert "employeeId=" not in formatted                 # filter value gone
+    assert "employeeId=" not in formatted  # filter value gone
     assert "00000000-0000-0000-0000-000000000009" not in formatted
 
 
@@ -219,7 +229,7 @@ def test_httpx_supabase_urls_sanitized_end_to_end(caplog):
     """The raw httpx URL line enters the pipeline unsanitized (httpx logs the
     full URL) — what we EMIT must carry the path only, no query/id values."""
     supabase_line = (
-        'HTTP Request: GET https://x.supabase.co/rest/v1/tickets'
+        "HTTP Request: GET https://x.supabase.co/rest/v1/tickets"
         '?select=*&employee_id=eq.985c8483-044c-4bdd-86d6-11c8731f089c&order=updated_at.desc "HTTP/2 200"'
     )
     with caplog.at_level(logging.INFO, logger="httpx"):
@@ -248,6 +258,7 @@ def test_exception_payloads_are_redacted_too():
 # Layer events: flow_event / flow_operation / flow_warning
 # ---------------------------------------------------------------------------
 
+
 def test_flow_event_carries_event_operation_and_stamps_context(caplog):
     with caplog.at_level(logging.INFO, logger="hrdesk.flow"):
         flow_event(
@@ -268,8 +279,9 @@ def test_flow_event_carries_event_operation_and_stamps_context(caplog):
 
 def test_flow_operation_emits_started_completed_without_records_leaks(caplog):
     with caplog.at_level(logging.INFO, logger="hrdesk.flow"):
-        with flow_operation("tickets.get", operation="tickets.get",
-                            method="GET", path="/api/tickets/TKT-1") as op:
+        with flow_operation(
+            "tickets.get", operation="tickets.get", method="GET", path="/api/tickets/TKT-1"
+        ) as op:
             op["ticket_ref"] = "TKT-1"
 
     events = _flow_records(caplog)
@@ -287,16 +299,20 @@ def test_flow_operation_failed_classifies_http_status(caplog):
 
     with caplog.at_level(logging.INFO, logger="hrdesk.flow"):
         with pytest.raises(_DomainError):
-            with flow_operation("drafts.submit", operation="drafts.submit",
-                                method="POST", path="/api/drafts/abc/submit"):
+            with flow_operation(
+                "drafts.submit",
+                operation="drafts.submit",
+                method="POST",
+                path="/api/drafts/abc/submit",
+            ):
                 raise _DomainError("nope")
 
     events = _flow_records(caplog)
     assert [r.http["event"] for r in events] == ["drafts.submit.started", "drafts.submit.failed"]
     failed = events[1]
     assert failed.http["status"] == 422
-    assert failed.http["error"] == "_DomainError"     # safe class name only
-    assert "nope" not in failed.getMessage()          # message text never in the event
+    assert failed.http["error"] == "_DomainError"  # safe class name only
+    assert "nope" not in failed.getMessage()  # message text never in the event
 
 
 def test_flow_operation_unexpected_error_has_no_status(caplog):
@@ -306,7 +322,7 @@ def test_flow_operation_unexpected_error_has_no_status(caplog):
 
     failed = _flow_records(caplog)[1]
     assert failed.http["event"] == "users.list.failed"
-    assert "status" not in failed.http            # nothing invented
+    assert "status" not in failed.http  # nothing invented
     assert failed.http["error"] == "RuntimeError"
 
 
@@ -330,30 +346,31 @@ def test_new_run_id_shape():
 
 
 class _Res:
-    data = [{"ok": True}]
+    pass
 
 
 class FakeSelectBuilder:
-    def execute(self):
-        return _Res()
+    @contextmanager
+    def connection(self):
+        yield self
 
 
 class _FailingBuilder(FakeSelectBuilder):
-    def execute(self):
-        raise APIError({"message": "fk violated", "code": "23503"})
+    def execute(self, _sql, _params):
+        raise ForeignKeyViolation("fk violated")
 
 
 def test_db_span_creates_recording_span_with_attributes():
-    with db_span("db.postgrest.tickets.select", {"db.operation": "select"}) as span:
+    with db_span("db.postgresql.tickets.select", {"db.operation": "select"}) as span:
         assert span is not None
         assert span.is_recording()
-        assert span.name == "db.postgrest.tickets.select"
+        assert span.name == "db.postgresql.tickets.select"
 
 
-def test_run_maps_postgrest_errors_unchanged():
+def test_run_maps_postgresql_errors():
     with pytest.raises(Exception) as err:
-        run(_FailingBuilder())
-    assert "Database rejected the write: fk violated" in str(err.value)
+        run(_FailingBuilder(), "INSERT INTO users (id) VALUES (%s)", ("id",), table="users")
+    assert "Database rejected the write" in str(err.value)
 
 
 def test_background_span_returns_recording_span():
@@ -542,6 +559,7 @@ def test_request_log_carries_request_trace_and_span_ids(caplog):
 # OTLP exporter log throttle (collector down must not flood the log)
 # ---------------------------------------------------------------------------
 
+
 def test_export_throttle_disabled_lets_everything_through():
     flt = _ExportErrorRateFilter(0)
     assert all(flt.filter(_record("m")) for _ in range(5))
@@ -549,8 +567,8 @@ def test_export_throttle_disabled_lets_everything_through():
 
 def test_export_throttle_passes_first_then_collapses_a_window(caplog):
     flt = _ExportErrorRateFilter(60)
-    assert flt.filter(_record("first failure")) is True    # visible
-    assert flt.filter(_record("second")) is False          # collapsed
+    assert flt.filter(_record("first failure")) is True  # visible
+    assert flt.filter(_record("second")) is False  # collapsed
     assert flt.filter(_record("third")) is False
 
     # Window elapsed (simulate) — the next failure summary + line pass.
@@ -565,7 +583,7 @@ def test_export_throttle_quiet_after_recovery():
     """No failures -> no drop count -> next window opens without a summary."""
     flt = _ExportErrorRateFilter(60)
     assert flt.filter(_record("a")) is True
-    assert flt._dropped == 0    # nothing was collapsed
+    assert flt._dropped == 0  # nothing was collapsed
 
 
 # ---------------------------------------------------------------------------
