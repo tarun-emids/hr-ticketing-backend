@@ -38,7 +38,8 @@ Use Python 3.14 (the project uses lazy class-body annotations).
    psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f schema.sql
    ```
 
-   This idempotently creates the application tables, indexes, triggers, and
+   This idempotently creates the application tables (including PostgreSQL
+   storage for attachments and knowledge-base PDFs), indexes, triggers, and
    seven demo users.
 3. Create `.env` from `.env.example`. Configure a PostgreSQL connection URL and
    a persistent attachment signing key:
@@ -66,6 +67,9 @@ Use Python 3.14 (the project uses lazy class-body annotations).
    `--password` or `HR_DESK_TEMP_PASSWORD` to provide it non-interactively.
    Passwords must contain at least 12 characters. Do not commit `.env` or
    supply passwords as command-line arguments in shared shell history.
+   To seed the policy library and render its PDFs into PostgreSQL, install
+   `scripts/requirements-seed.txt` and run
+   `python scripts/seed_knowledge_base.py`.
 
 - API docs: <http://localhost:8000/docs>
 - Liveness: `GET /health` (does not query PostgreSQL)
@@ -97,10 +101,10 @@ Supabase's relational tables are PostgreSQL tables and can be exported with
 4. Set new login passwords with `python scripts/provision_users.py`. Supabase
    Auth password hashes are not stored in `public.users` and cannot be reused
    by this database-backed login.
-5. Supabase Storage objects are separate from PostgreSQL table data. Export
-   the old private bucket files and re-upload them to the new API, or plan a
-   dedicated object migration before cutover. Existing attachment metadata
-   alone does not copy the underlying file bytes.
+5. Existing Supabase Storage objects are separate from PostgreSQL table data.
+   Export and migrate any ticket attachment bytes into `attachments.data`.
+   The policy PDFs can be regenerated and seeded into `kb_documents.file_data`
+   with `python scripts/seed_knowledge_base.py`.
 6. Restore the ticket reference sequence after importing existing ticket
    numbers:
 
@@ -133,6 +137,7 @@ The API paths and JSON response shapes remain the same:
 | Draft CRUD, submit, attachments | `/api/drafts` |
 | Notifications | `/api/notifications` |
 | Users and lookup metadata | `GET /api/users`, `/api/users/agents`, `/api/meta` |
+| Knowledge-base catalogue and policy PDFs | `/api/kb`, `/api/kb/{slug}`, `/api/kb/{slug}/file` |
 
 Ticket writes return the full ticket and thread; ticket lists leave `turns`
 empty. Agent replies stamp `firstReplyAt` once and move `Open` tickets to
@@ -160,6 +165,14 @@ circuit breaker. Connection/resource outages count toward opening the breaker;
 constraint violations and invalid SQL/client errors do not. Open circuits fail
 fast with HTTP 503. `GET /health/deps` reports the breaker without querying
 PostgreSQL.
+
+Transient PostgreSQL failures are retried with full-jitter exponential
+backoff. Reads and idempotent updates/deletes may retry connection/resource
+failures; inserts retry only when PostgreSQL reports a transaction-aborting
+transient SQLSTATE. Tune attempts and delays with `RETRY_MAX_ATTEMPTS`,
+`RETRY_BACKOFF_INITIAL_S`, and `RETRY_BACKOFF_MAX_S`; breaker threshold and
+cooldown use `CIRCUIT_BREAKER_FAILURE_THRESHOLD` and
+`CIRCUIT_BREAKER_RECOVERY_SECONDS`.
 
 ## Verification
 

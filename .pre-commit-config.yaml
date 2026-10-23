@@ -1,0 +1,11 @@
+# Install once per clone: `pip install pre-commit && pre-commit install`
+# (see README §9 — Commit hooks). Every backend commit then goes through:
+#   ruff-check    lint rules from .ruff.toml, auto-fixing what can auto-fix
+#   ruff-format   the formatter (black-style) before files are committed
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.14.5
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format

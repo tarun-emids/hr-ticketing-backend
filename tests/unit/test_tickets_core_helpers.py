@@ -5,7 +5,7 @@ from contextlib import contextmanager
 
 import pytest
 from fastapi import HTTPException
-from psycopg.errors import ForeignKeyViolation, SyntaxError
+from psycopg.errors import ForeignKeyViolation, InvalidPassword, SyntaxError
 
 from app.repositories.base import _db_failure, run
 from app.repositories.ticket_repository import ticket_ref
@@ -67,3 +67,7 @@ def test_database_outage_maps_to_502_and_counts():
 def test_sql_syntax_error_does_not_trip_the_database_breaker():
     error = SyntaxError("invalid SQL")
     assert not _db_failure(error)
+
+
+def test_invalid_database_credentials_do_not_trip_the_breaker():
+    assert not _db_failure(InvalidPassword("invalid credentials"))

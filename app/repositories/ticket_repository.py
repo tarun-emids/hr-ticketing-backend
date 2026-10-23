@@ -1,13 +1,43 @@
 """PostgreSQL ticket rows and ticket-thread operations."""
 
 import re
+import time
+from contextlib import contextmanager
 from typing import Optional
 
 from psycopg_pool import ConnectionPool
 
+from app.observability import flow_event
 from app.repositories.base import UUID_RE, as_uuid, first_of, insert_row, rows_of, update_row
 
 REF_RE = re.compile(r"^TKT-\d+$")
+
+
+@contextmanager
+def _repository_operation(event: str, operation: str, **fields):
+    started = time.perf_counter()
+    flow_event(f"{event}_started", operation=operation, **fields)
+    extras = {}
+    try:
+        yield extras
+    except Exception as error:
+        status = getattr(error, "status_code", None)
+        flow_event(
+            f"{event}_failed",
+            operation=operation,
+            status=status if isinstance(status, int) else None,
+            error=type(error).__name__,
+            **fields,
+            **extras,
+        )
+        raise
+    flow_event(
+        f"{event}_completed",
+        operation=operation,
+        duration_ms=round((time.perf_counter() - started) * 1000, 1),
+        **fields,
+        **extras,
+    )
 
 
 def ticket_ref(tid: str) -> tuple[str, str]:
@@ -85,11 +115,29 @@ class TicketRepository:
             table="tickets",
         )
 
-    def insert_ticket(self, row: dict) -> dict:
-        return insert_row(self._database, "tickets", row)
+    def insert_ticket(self, row: dict, *, operation: Optional[str] = None) -> dict:
+        if operation is None:
+            return insert_row(self._database, "tickets", row)
+        with _repository_operation(
+            "ticket.repository.insert", operation=operation, table="tickets"
+        ) as event:
+            result = insert_row(self._database, "tickets", row)
+            event["ticket_ref"] = result.get("ref")
+            return result
 
-    def update_ticket(self, ticket_uuid: str, patch: dict) -> None:
-        update_row(self._database, "tickets", ticket_uuid, patch)
+    def update_ticket(
+        self, ticket_uuid: str, patch: dict, *, operation: Optional[str] = None
+    ) -> None:
+        if operation is None:
+            update_row(self._database, "tickets", ticket_uuid, patch)
+            return
+        with _repository_operation(
+            "ticket.repository.update",
+            operation=operation,
+            table="tickets",
+            patch_columns=sorted(patch),
+        ):
+            update_row(self._database, "tickets", ticket_uuid, patch)
 
     def list_replies(self, ticket_uuid: str) -> list[dict]:
         return rows_of(
@@ -99,8 +147,16 @@ class TicketRepository:
             table="replies",
         )
 
-    def insert_reply(self, row: dict) -> dict:
-        return insert_row(self._database, "replies", row)
+    def insert_reply(self, row: dict, *, operation: Optional[str] = None) -> dict:
+        if operation is None:
+            return insert_row(self._database, "replies", row)
+        with _repository_operation(
+            "reply.repository.insert",
+            operation=operation,
+            table="replies",
+            author_role=row.get("author_role"),
+        ):
+            return insert_row(self._database, "replies", row)
 
     def has_agent_reply(self, ticket_uuid: str) -> bool:
         return bool(

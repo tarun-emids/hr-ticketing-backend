@@ -1,4 +1,4 @@
-"""Circuit breaker state machine — offline, no Supabase, no threads except
+"""Circuit breaker state machine — offline, no database, no threads except
 where a half-open probe must genuinely be in flight to prove stampede-guard."""
 
 import concurrent.futures

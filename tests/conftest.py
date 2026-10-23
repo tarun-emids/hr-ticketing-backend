@@ -157,6 +157,15 @@ class SQLitePool:
               path TEXT PRIMARY KEY, data BLOB NOT NULL, content_type TEXT NOT NULL,
               created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
+            CREATE TABLE kb_documents (
+              slug TEXT PRIMARY KEY, ref TEXT NOT NULL UNIQUE, title TEXT NOT NULL,
+              category TEXT NOT NULL, audience TEXT NOT NULL, summary TEXT NOT NULL,
+              keywords TEXT NOT NULL, search_text TEXT NOT NULL, file_path TEXT NOT NULL,
+              file_size INTEGER NOT NULL, page_count INTEGER NOT NULL, version TEXT NOT NULL,
+              effective_date TEXT NOT NULL, file_data BLOB,
+              created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
             CREATE TRIGGER tickets_updated AFTER UPDATE ON tickets
               WHEN NEW.updated_at = OLD.updated_at BEGIN
                 UPDATE tickets SET updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00', 'now')
@@ -305,6 +314,8 @@ def api(monkeypatch):
 
     fake = SQLitePool()
     fake.seed()
+    seed_kb_rows(fake)
+    monkeypatch.setattr(app_config, "RETRY_MAX_ATTEMPTS", 1)
     monkeypatch.setattr(app_config, "get_database", lambda: fake)
     client = TestClient(app_main.app)
     yield SimpleNamespace(client=client, fake=fake, U=U)
@@ -316,8 +327,128 @@ def ticket_payload(employee_id, **over):
         "employeeId": employee_id,
         "category": "Payroll",
         "subject": "May payslip missing shift allowance",
-        "description": "The May payslip does not include the 12 weekend shift hours I worked.",
+        "description": "The May payslip does not include the 12 hours of weekend shift allowance I worked.",
         "priority": "High",
     }
     base.update(over)
     return base
+
+
+def kb_row(
+    slug,
+    ref,
+    title,
+    audience,
+    *,
+    category="General",
+    keywords="",
+    summary="",
+    search_text="",
+    updated_at=None,
+):
+    """A kb_documents row shaped exactly like the schema (section 9)."""
+    return {
+        "id": str(uuidlib.uuid4()),
+        "slug": slug,
+        "ref": ref,
+        "title": title,
+        "category": category,
+        "audience": audience,
+        "summary": summary or f"{title} policy summary.",
+        "keywords": keywords,
+        "search_text": search_text or f"{title} {summary or ''} {keywords}".lower(),
+        "file_path": f"pdf/{ref.lower()}-{slug}.pdf",
+        "file_size": 12345,
+        "page_count": 7,
+        "version": "v1.0",
+        "effective_date": "2026-04-01",
+        "file_data": b"%PDF-1.4 fake-pdf-bytes",
+        "created_at": _ORIGIN.isoformat(),
+        "updated_at": updated_at or _ORIGIN.isoformat(),
+    }
+
+
+_SEED_KB = [
+    dict(
+        slug="leave-and-time-off-policy",
+        ref="KB-E-01",
+        title="Leave and Time Off Policy",
+        category="Leave",
+        audience="employee",
+        keywords="leave, pto, vacation, sick, carryover",
+        summary="How time off accrues, carries over and gets approved.",
+    ),
+    dict(
+        slug="hybrid-work-policy",
+        ref="KB-E-02",
+        title="Hybrid Work Policy",
+        category="Workplace",
+        audience="employee",
+        keywords="hybrid, remote, office, equipment",
+        summary="Weeks per month on site and what the office provides.",
+    ),
+    dict(
+        slug="attendance-working-hours-policy",
+        ref="KB-E-03",
+        title="Attendance and Working Hours Policy",
+        category="Workplace",
+        audience="employee",
+        keywords="attendance, working hours, shifts",
+        summary="Core hours, shift expectations and attendance recording.",
+    ),
+    dict(
+        slug="payroll-processing-sop",
+        ref="KB-HR-01",
+        title="Payroll Processing SOP",
+        category="Payroll",
+        audience="hr",
+        keywords="payroll, run, cutoff, anomaly",
+        summary="The monthly payroll cycle runbook, cutoffs and anomaly flow.",
+    ),
+    dict(
+        slug="exit-process-sop",
+        ref="KB-HR-02",
+        title="Exit Process SOP",
+        category="Offboarding",
+        audience="hr",
+        keywords="exit, offboarding, clearance, fnf",
+        summary="Notice, clearance and final-settlement steps for leavers.",
+    ),
+]
+
+
+def seed_kb_rows(fake):
+    """Seed employee and HR documents with offline PostgreSQL-like PDF bytes."""
+    rows = [kb_row(**spec) for spec in _SEED_KB]
+    for row in rows:
+        fake.execute(
+            """
+            INSERT INTO kb_documents (
+              slug, ref, title, category, audience, summary, keywords, search_text,
+              file_path, file_size, page_count, version, effective_date, file_data,
+              created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            tuple(
+                row[column]
+                for column in (
+                    "slug",
+                    "ref",
+                    "title",
+                    "category",
+                    "audience",
+                    "summary",
+                    "keywords",
+                    "search_text",
+                    "file_path",
+                    "file_size",
+                    "page_count",
+                    "version",
+                    "effective_date",
+                    "file_data",
+                    "created_at",
+                    "updated_at",
+                )
+            ),
+        )
+    return rows

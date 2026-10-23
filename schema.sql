@@ -119,6 +119,28 @@ CREATE TABLE IF NOT EXISTS attachments (
   created_at   timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS kb_documents (
+  slug          text PRIMARY KEY,
+  ref           text NOT NULL UNIQUE,
+  title         text NOT NULL,
+  category      text NOT NULL,
+  audience      text NOT NULL CHECK (audience IN ('employee', 'hr')),
+  summary       text NOT NULL DEFAULT '',
+  keywords      text NOT NULL DEFAULT '',
+  search_text   text NOT NULL DEFAULT '',
+  file_path     text NOT NULL,
+  file_size     bigint NOT NULL CHECK (file_size >= 0),
+  page_count    integer NOT NULL CHECK (page_count > 0),
+  version       text NOT NULL,
+  effective_date date NOT NULL,
+  file_data     bytea,
+  created_at    timestamptz NOT NULL DEFAULT now(),
+  updated_at    timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_kb_documents_audience_updated
+  ON kb_documents (audience, updated_at DESC);
+
 INSERT INTO users (name, email, role) VALUES
   ('Priya Sharma', 'priya@acme.com',     'employee'),
   ('Marcus Webb',  'marcus@acme.com',    'employee'),

@@ -1,4 +1,5 @@
-"""Observability: structured logging, trace correlation, request ids, files.
+"""Observability: structured logging, trace correlation, request ids, files,
+and the flow_operation event trio.
 
 Runs fully offline: the conftest sets TRACE_ENABLED=false and LOG_TO_FILE=false
 so app.main never creates the OTLP exporter or repo log files, and this module
@@ -12,6 +13,7 @@ import json
 import logging
 import re
 import sys
+import time
 from contextlib import contextmanager
 from types import SimpleNamespace
 
@@ -32,8 +34,13 @@ from app.observability import (
     JsonLogFormatter,
     RequestLogMiddleware,
     _current_span_ids,
+    _ExportErrorRateFilter,
     background_span,
     db_span,
+    flow_event,
+    flow_operation,
+    flow_warning,
+    new_run_id,
     setup_logging,
     setup_tracing,
 )
@@ -69,9 +76,9 @@ def _global_provider():
 # ---------------------------------------------------------------------------
 
 
-def _record(msg, level=logging.INFO, exc_info=None, http=None):
+def _record(msg, level=logging.INFO, exc_info=None, http=None, name="hrdesk.request"):
     rec = logging.LogRecord(
-        "hrdesk.request",
+        name,
         level,
         "path/to/tests.py",
         1,
@@ -84,6 +91,10 @@ def _record(msg, level=logging.INFO, exc_info=None, http=None):
     if http is not None:
         rec.http = http  # mirror logging.info(msg, extra={"http": ...})
     return rec
+
+
+def _flow_records(caplog):
+    return [r for r in caplog.records if r.name == "hrdesk.flow"]
 
 
 def test_json_log_basic_fields():
@@ -141,6 +152,192 @@ def test_log_records_carry_trace_ids_inside_a_span():
     finally:
         otel_context.detach(token)
         span.end()
+
+
+def test_json_explicit_http_trace_fields_win_over_context():
+    """Ingest events carry the ORIGINAL operation's trace pair; the http extra
+    must win so a record never mixes the ingest hop's trace with the original.
+    """
+    tracer = TracerProvider().get_tracer("tests")
+    span = tracer.start_span("ingest-hop-span")
+    token = otel_context.attach(otel_trace.set_span_in_context(span))
+    try:
+        rec = _record(
+            "[frontend] http_request_start",
+            http={
+                "source": "frontend",
+                "correlation_id": "req-1234567890",
+                "trace_id": "a" * 32,  # original browser operation trace
+                "span_id": "b" * 16,
+            },
+        )
+        payload = json.loads(JsonLogFormatter().format(rec))
+        assert payload["trace_id"] == "a" * 32
+        assert payload["span_id"] == "b" * 16
+        assert payload["correlation_id"] == "req-1234567890"
+    finally:
+        otel_context.detach(token)
+        span.end()
+
+
+# ---------------------------------------------------------------------------
+# Sensitive-data policy: query strings never reach emitted output
+# ---------------------------------------------------------------------------
+
+
+def test_url_query_strings_are_stripped_from_emitted_lines():
+    """httpx-style lines include the FULL request URL — everything after '?'
+    must be gone, while the path (and precious correlation metadata) remains.
+    (The JSON formatter escapes embedded quotes, so assert the status token
+    without its quotes.)
+    """
+    line = (
+        "HTTP Request: GET https://example.supabase.co/rest/v1/users"
+        '?select=*&id=eq.00000000-0000-0000-0000-000000000001&limit=1 "HTTP/2 200 OK"'
+    )
+    rec = _record(line, name="httpx")
+    for formatted in (JsonLogFormatter().format(rec), ConsoleLogFormatter().format(rec)):
+        assert "?select" not in formatted  # no query string at all
+        assert "id=eq.00000000" not in formatted  # selector value gone
+        assert "00000000-0000-0000-0000-000000000001" not in formatted
+        assert "https://example.supabase.co/rest/v1/users" in formatted  # path kept
+        assert "HTTP/2 200 OK" in formatted  # status metadata kept
+
+
+def test_sensitive_query_params_redacted_in_emitted_output():
+    """Denylist masking still applies to non-URL ``name=value`` text (the
+    formatter-level redaction covers any emitter, including third parties)."""
+    rec = _record("login failed for user with password=s3cr3t-value")
+    for formatted in (JsonLogFormatter().format(rec), ConsoleLogFormatter().format(rec)):
+        assert "password=[REDACTED]" in formatted
+        assert "s3cr3t-value" not in formatted
+
+
+def test_api_query_params_never_reach_middleware_logs(id_app, caplog):
+    """The middleware's own record carries the path only — never the query."""
+    with caplog.at_level(logging.INFO, logger="hrdesk.request"):
+        res = id_app.client.get("/ping?employeeId=00000000-0000-0000-0000-000000000009&q=1")
+    assert res.status_code == 200
+    rec = _request_log_records(caplog)[0]
+    assert rec.http["path"] == "/ping"  # path only, never query
+    formatted = JsonLogFormatter().format(rec)
+    assert "employeeId=" not in formatted  # filter value gone
+    assert "00000000-0000-0000-0000-000000000009" not in formatted
+
+
+def test_httpx_supabase_urls_sanitized_end_to_end(caplog):
+    """The raw httpx URL line enters the pipeline unsanitized (httpx logs the
+    full URL) — what we EMIT must carry the path only, no query/id values."""
+    supabase_line = (
+        "HTTP Request: GET https://x.supabase.co/rest/v1/tickets"
+        '?select=*&employee_id=eq.985c8483-044c-4bdd-86d6-11c8731f089c&order=updated_at.desc "HTTP/2 200"'
+    )
+    with caplog.at_level(logging.INFO, logger="httpx"):
+        logging.getLogger("httpx").info(supabase_line)
+    rec = [r for r in caplog.records if r.name == "httpx"][0]
+    formatted = JsonLogFormatter().format(rec)
+    assert "employee_id=" not in formatted
+    assert "985c8483-044c-4bdd-86d6-11c8731f089c" not in formatted
+    assert "?select" not in formatted
+    assert "/rest/v1/tickets" in formatted
+
+
+def test_exception_payloads_are_redacted_too():
+    """Exception args/tracebacks may embed URLs (httpx/httpcore errors) — the
+    exc text must go through the same redaction."""
+    try:
+        raise RuntimeError("connect failed for https://x.supabase.co/rest/v1/users?token=abc123")
+    except RuntimeError:
+        rec = _record("store failure", exc_info=sys.exc_info())
+    payload = json.loads(JsonLogFormatter().format(rec))
+    assert "token=abc123" not in payload["exc"]
+    assert "https://x.supabase.co/rest/v1/users?token=abc123" not in payload["exc"]
+
+
+# ---------------------------------------------------------------------------
+# Layer events: flow_event / flow_operation / flow_warning
+# ---------------------------------------------------------------------------
+
+
+def test_flow_event_carries_event_operation_and_stamps_context(caplog):
+    with caplog.at_level(logging.INFO, logger="hrdesk.flow"):
+        flow_event(
+            "ticket.repository.insert_started",
+            operation="tickets.create",
+            table="tickets",
+        )
+    rec = _flow_records(caplog)[0]
+    assert rec.getMessage() == "ticket.repository.insert_started"
+    assert rec.http["source"] == "backend"
+    assert rec.http["event"] == "ticket.repository.insert_started"
+    assert rec.http["operation"] == "tickets.create"
+    assert rec.http["table"] == "tickets"
+    payload = json.loads(JsonLogFormatter().format(rec))
+    assert payload["event"] == "ticket.repository.insert_started"
+    assert payload["operation"] == "tickets.create"
+
+
+def test_flow_operation_emits_started_completed_without_records_leaks(caplog):
+    with caplog.at_level(logging.INFO, logger="hrdesk.flow"):
+        with flow_operation(
+            "tickets.get", operation="tickets.get", method="GET", path="/api/tickets/TKT-1"
+        ) as op:
+            op["ticket_ref"] = "TKT-1"
+
+    events = _flow_records(caplog)
+    assert [r.http["event"] for r in events] == ["tickets.get.started", "tickets.get.completed"]
+    assert all(r.http["operation"] == "tickets.get" for r in events)
+    completed = events[1]
+    assert completed.http["ticket_ref"] == "TKT-1"
+    assert re.fullmatch(r"\d+(\.\d+)?", str(completed.http["duration_ms"]))
+    assert "request_id" not in completed.http  # no request context here (unit scope)
+
+
+def test_flow_operation_failed_classifies_http_status(caplog):
+    class _DomainError(Exception):
+        status_code = 422
+
+    with caplog.at_level(logging.INFO, logger="hrdesk.flow"):
+        with pytest.raises(_DomainError):
+            with flow_operation(
+                "drafts.submit",
+                operation="drafts.submit",
+                method="POST",
+                path="/api/drafts/abc/submit",
+            ):
+                raise _DomainError("nope")
+
+    events = _flow_records(caplog)
+    assert [r.http["event"] for r in events] == ["drafts.submit.started", "drafts.submit.failed"]
+    failed = events[1]
+    assert failed.http["status"] == 422
+    assert failed.http["error"] == "_DomainError"  # safe class name only
+    assert "nope" not in failed.getMessage()  # message text never in the event
+
+
+def test_flow_operation_unexpected_error_has_no_status(caplog):
+    with pytest.raises(RuntimeError):
+        with flow_operation("users.list", operation="users.list"):
+            raise RuntimeError("exploded")
+
+    failed = _flow_records(caplog)[1]
+    assert failed.http["event"] == "users.list.failed"
+    assert "status" not in failed.http  # nothing invented
+    assert failed.http["error"] == "RuntimeError"
+
+
+def test_flow_warning_emits_at_warning_level(caplog):
+    with caplog.at_level(logging.WARNING, logger="hrdesk.flow"):
+        flow_warning("logs.ingest.rejected", operation="logs.ingest", limit_per_minute=60)
+    rec = _flow_records(caplog)[0]
+    assert rec.levelname == "WARNING"
+    assert rec.http["event"] == "logs.ingest.rejected"
+    assert rec.http["limit_per_minute"] == 60
+
+
+def test_new_run_id_shape():
+    for _ in range(3):
+        assert re.fullmatch(r"[0-9a-f]{32}", new_run_id())
 
 
 # ---------------------------------------------------------------------------
@@ -358,30 +555,35 @@ def test_request_log_carries_request_trace_and_span_ids(caplog):
     assert re.fullmatch(r"[0-9a-f]{16}", rec.http["span_id"])  # server span's own id
 
 
-def test_query_strings_never_reach_middleware_logs(id_app, caplog):
-    """The middleware's own record carries the path only — never the query."""
-    with caplog.at_level(logging.INFO, logger="hrdesk.request"):
-        res = id_app.client.get("/ping?access_token=sekrit-token-zzz&q=1")
-    assert res.status_code == 200
-    rec = _request_log_records(caplog)[0]
-    assert rec.http["path"] == "/ping"  # path only, never query
-    assert "sekrit-token-zzz" not in JsonLogFormatter().format(rec)
-    assert "sekrit-token-zzz" not in ConsoleLogFormatter().format(rec)
+# ---------------------------------------------------------------------------
+# OTLP exporter log throttle (collector down must not flood the log)
+# ---------------------------------------------------------------------------
 
 
-def test_sensitive_query_params_redacted_in_emitted_output(id_app, caplog):
-    """httpx logs full request URLs — sensitive values must still be masked in
-    what we EMIT (formatter-level redaction covers third-party lines too)."""
-    with caplog.at_level(logging.INFO):
-        res = id_app.client.get("/ping?access_token=sekrit-token-zzz&q=1")
-    assert res.status_code == 200
-    httpx_records = [r for r in caplog.records if r.name == "httpx"]
-    assert httpx_records, "the httpx URL line should be captured raw"
-    rec = httpx_records[0]
+def test_export_throttle_disabled_lets_everything_through():
+    flt = _ExportErrorRateFilter(0)
+    assert all(flt.filter(_record("m")) for _ in range(5))
 
-    for formatted in (JsonLogFormatter().format(rec), ConsoleLogFormatter().format(rec)):
-        assert "access_token=[REDACTED]" in formatted  # param name retained
-        assert "sekrit-token-zzz" not in formatted  # value masked
+
+def test_export_throttle_passes_first_then_collapses_a_window(caplog):
+    flt = _ExportErrorRateFilter(60)
+    assert flt.filter(_record("first failure")) is True  # visible
+    assert flt.filter(_record("second")) is False  # collapsed
+    assert flt.filter(_record("third")) is False
+
+    # Window elapsed (simulate) — the next failure summary + line pass.
+    with caplog.at_level(logging.WARNING, logger="hrdesk"):
+        flt._last_pass = time.monotonic() - 61
+        assert flt.filter(_record("post-window")) is True
+    summaries = [r for r in caplog.records if r.name == "hrdesk"]
+    assert any("2 exporter log lines suppressed" in r.getMessage() for r in summaries)
+
+
+def test_export_throttle_quiet_after_recovery():
+    """No failures -> no drop count -> next window opens without a summary."""
+    flt = _ExportErrorRateFilter(60)
+    assert flt.filter(_record("a")) is True
+    assert flt._dropped == 0  # nothing was collapsed
 
 
 # ---------------------------------------------------------------------------

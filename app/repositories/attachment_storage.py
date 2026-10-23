@@ -66,7 +66,7 @@ class AttachmentStorageRepository:
                 raise ValueError
             padded_path = encoded_path + "=" * (-len(encoded_path) % 4)
             path = base64.urlsafe_b64decode(padded_path.encode()).decode()
-        except ValueError, UnicodeDecodeError:
+        except (ValueError, UnicodeDecodeError):
             raise HTTPException(
                 status_code=404, detail="Attachment link is invalid or expired."
             ) from None

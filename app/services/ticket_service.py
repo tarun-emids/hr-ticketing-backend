@@ -11,6 +11,16 @@ Mirrors src/data/store.js 1:1 (same rules the frontend mock enforces):
   (Open / In Progress) clears both;
 - auto-assign routes to the least-loaded agent (open count, total as
   tiebreak). Pure counting — no AI, no scoring, fully inspectable.
+
+Observability: controller events (``tickets.*`` started/completed/failed
+via flow_operation) trace the outer boundary; this layer adds milestones at
+points a developer would otherwise have to infer: validation after guard
+checks (``ticket.service.validation_completed``), the auto-assign decision
+(``ticket.service.assignment_selected``), and storage milestones for
+attachments (``attachment.storage.upload_completed`` /
+``attachment.storage.url_signed`` — URLs/names never logged). Errors keep
+propagating unchanged; failure classification lives at the controller
+boundary.
 """
 
 import os
@@ -21,6 +31,7 @@ from typing import Optional
 from fastapi import HTTPException
 
 from app.models import ticket_out
+from app.observability import flow_event
 from app.repositories.attachment_storage import AttachmentStorageRepository
 from app.repositories.ticket_repository import TicketRepository
 from app.repositories.user_repository import UserRepository
@@ -75,18 +86,14 @@ class TicketService:
         row = self._row(tid)
         return ticket_out(row, self._tickets.list_replies(row["id"]))
 
-    def _patch_and_return(self, tid: str, patch: dict) -> dict:
+    def _patch_and_return(self, tid: str, patch: dict, *, operation: Optional[str] = None) -> dict:
         """Patch the ticket row (trigger bumps updated_at), return the full ticket."""
         row = self._row(tid)
-        self._tickets.update_ticket(row["id"], patch)
+        if operation is None:
+            self._tickets.update_ticket(row["id"], patch)
+        else:
+            self._tickets.update_ticket(row["id"], patch, operation=operation)
         return self._full(tid)
-
-    def _notify_assign(self, pre_row: dict, assignee_id: Optional[str]) -> None:
-        """Notify on actual reassignment only (re-picking the same agent stays quiet)."""
-        if pre_row.get("assignee_id") != assignee_id:
-            self._notifier.safe_notify(
-                pre_row, EV_ASSIGNED, None, assigned_recipients(assignee_id, None)
-            )
 
     # -- reads --------------------------------------------------------------
 
@@ -162,6 +169,14 @@ class TicketService:
                 status_code=422,
                 detail="employeeId must belong to a user with role 'employee'",
             )
+        # Guards passed — no ticket content below; only safe metadata.
+        flow_event(
+            "ticket.service.validation_completed",
+            operation="tickets.create",
+            employee_id=employee_id,
+            category=category,
+            priority=priority,
+        )
 
         row = {
             "employee_id": employee_id,
@@ -171,7 +186,7 @@ class TicketService:
             "priority": priority,
             "status": "Open",
         }
-        new_row = self._tickets.insert_ticket(row)
+        new_row = self._tickets.insert_ticket(row, operation="tickets.create")
         # Notify AFTER the insert; safe_notify swallows any notification failure.
         self._notifier.safe_notify(
             new_row, EV_CREATED, employee, created_recipients(self._notifier.agent_ids())
@@ -191,6 +206,12 @@ class TicketService:
         if not author:
             raise HTTPException(status_code=422, detail="authorId does not match a known user")
         role = author["role"]
+        flow_event(
+            "ticket.service.validation_completed",
+            operation="tickets.reply",
+            author_id=author_id,
+            author_role=role,
+        )
 
         now = self._now()
         self._tickets.insert_reply(
@@ -199,7 +220,8 @@ class TicketService:
                 "author_id": author_id,
                 "author_role": role,
                 "body": text.strip(),
-            }
+            },
+            operation="tickets.reply",
         )
 
         patch: dict = {}
@@ -212,7 +234,7 @@ class TicketService:
             patch["status"] = "Waiting on Employee"
 
         if patch:
-            self._tickets.update_ticket(row["id"], patch)
+            self._tickets.update_ticket(row["id"], patch, operation="tickets.reply")
         self._notifier.safe_notify(
             row,
             EV_REPLY,
@@ -237,6 +259,13 @@ class TicketService:
         actor = self._users.get_by_id(actor_id)
         if not actor:
             raise HTTPException(status_code=422, detail="actorId does not match a known user")
+        flow_event(
+            "ticket.service.validation_completed",
+            operation="tickets.status",
+            actor_id=actor_id,
+            from_status=row.get("status"),
+            to_status=status,
+        )
 
         patch: dict = {"status": status}
         if status == "Resolved":
@@ -248,7 +277,7 @@ class TicketService:
             patch["resolved_at"] = None
             patch["closed_by"] = None
         # Waiting on Employee: no timestamp changes
-        result = self._patch_and_return(tid, patch)
+        result = self._patch_and_return(tid, patch, operation="tickets.status")
         self._notifier.safe_notify(
             result,
             EV_STATUS,
@@ -259,10 +288,10 @@ class TicketService:
         return result
 
     def set_priority(self, tid: str, priority: str) -> dict:
-        return self._patch_and_return(tid, {"priority": priority})
+        return self._patch_and_return(tid, {"priority": priority}, operation="tickets.priority")
 
     def set_category(self, tid: str, category: str) -> dict:
-        return self._patch_and_return(tid, {"category": category})
+        return self._patch_and_return(tid, {"category": category}, operation="tickets.category")
 
     # -- assignment ---------------------------------------------------------
 
@@ -281,7 +310,15 @@ class TicketService:
                 )
             if agent["role"] != "agent":
                 raise HTTPException(status_code=422, detail="assigneeId must be an HR agent")
+            flow_event(
+                "ticket.service.validation_completed",
+                operation="tickets.assign",
+                assignee_id=assignee_id,
+            )
 
+        # Capture before updating so the reassignment decision cannot depend
+        # on state written by our own update.
+        pre_assignee = row.get("assignee_id")
         has_agent_turn = self._tickets.has_agent_reply(row["id"])
 
         now = self._now()
@@ -292,17 +329,22 @@ class TicketService:
                     "author_id": assignee_id,
                     "author_role": "agent",
                     "body": AGENT_PICKUP_TEXT,
-                }
+                },
+                operation="tickets.assign",
             )
             patch: dict = {"assignee_id": assignee_id, "first_reply_at": now}
             if row["status"] == "Open":
                 patch["status"] = "In Progress"
-            result = self._patch_and_return(row["ref"], patch)
-            self._notify_assign(row, assignee_id)
-            return result
+            result = self._patch_and_return(row["ref"], patch, operation="tickets.assign")
+        else:
+            result = self._patch_and_return(
+                row["ref"], {"assignee_id": assignee_id}, operation="tickets.assign"
+            )
 
-        result = self._patch_and_return(row["ref"], {"assignee_id": assignee_id})
-        self._notify_assign(row, assignee_id)
+        if pre_assignee != assignee_id:
+            self._notifier.safe_notify(
+                row, EV_ASSIGNED, None, assigned_recipients(assignee_id, None)
+            )
         return result
 
     def assign_by_key(self, tid: str, assignee_id: Optional[str]) -> dict:
@@ -323,6 +365,14 @@ class TicketService:
             raise HTTPException(status_code=409, detail="No HR agents are configured yet.")
 
         pick = min(plate, key=lambda a: (a["openCount"], a["totalCount"]))
+        flow_event(
+            "ticket.service.assignment_selected",
+            operation="tickets.auto_assign",
+            routed_to=pick["id"],
+            agent_open_count=pick["openCount"],
+            agent_total_count=pick["totalCount"],
+            candidates=len(plate),
+        )
         ticket = self.assign(row, pick["id"])
         return {
             **ticket,
@@ -345,6 +395,15 @@ class TicketService:
         ext = os.path.splitext(filename)[1][:16] or ".bin"
         path = f"{row['ref']}/{uuidlib.uuid4().hex}{ext}"
         self._storage.upload(path, data, content_type)
+        # Storage milestone: size/type/path only — filename + bytes never logged.
+        flow_event(
+            "attachment.storage.upload_completed",
+            operation="tickets.attachment_upload",
+            size_bytes=len(data),
+            content_type=content_type,
+            storage_path=path,
+            ticket_ref=row.get("ref"),
+        )
 
         updated = self._patch_and_return(
             tid,
@@ -353,18 +412,26 @@ class TicketService:
                 "attachment_name": filename,
                 "attachment_size": len(data),
             },
+            operation="tickets.attachment_upload",
         )
         if row.get("attachment_path"):
             self._storage.remove(row["attachment_path"])
         return updated
 
     def attachment_url(self, tid: str, ttl: int) -> dict:
-        """GET /tickets/{id}/attachment — short-lived signed URL for the file."""
+        """GET /tickets/{id}/attachment — short-lived signed URL for the file.
+        The URL itself (one-time token) is deliberately never logged."""
         row = self._row(tid)
         if not row.get("attachment_path"):
             raise HTTPException(status_code=404, detail="Ticket has no attachment")
 
         url = self._storage.signed_url(row["attachment_path"], ttl)
+        flow_event(
+            "attachment.storage.url_signed",
+            operation="tickets.attachment_url",
+            ticket_ref=row.get("ref"),
+            expires_in_seconds=self._storage.clamp_ttl(ttl),
+        )
         return {
             "name": row.get("attachment_name"),
             "size": row.get("attachment_size"),

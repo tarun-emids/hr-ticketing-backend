@@ -3,12 +3,18 @@
 The file bytes are read here (that is the HTTP-facing concern) — everything
 else — size cap, path, storage I/O, the signed URL — belongs to the layers
 below.
+
+Observability: ``attachment.upload`` / ``attachment.url`` events. Request
+descriptors (ticket ref, size, content type) ride BOTH boundary events;
+completed adds expiry metadata. The signed URL (one-time token inside) and
+the attachment NAME are never logged.
 """
 
 from fastapi import APIRouter, Depends, Request, Response, UploadFile
 
 from app.config import SIGNED_URL_TTL
 from app.deps import get_storage_repo, get_ticket_service
+from app.observability import flow_operation
 from app.repositories.attachment_storage import AttachmentStorageRepository
 from app.services.ticket_service import TicketService
 
@@ -23,12 +29,21 @@ def upload_attachment(
 ):
     """POST /tickets/{id}/attachment — multipart upload, <=5 MB."""
     data = file.file.read()
-    return svc.upload_attachment(
-        tid,
-        filename=file.filename,
+    with flow_operation(
+        "attachment.upload",
+        operation="tickets.attachment_upload",
+        method="POST",
+        path=f"/api/tickets/{tid}/attachment",
+        ticket_ref=tid,
+        size_bytes=len(data),
         content_type=file.content_type,
-        data=data,
-    )
+    ):
+        return svc.upload_attachment(
+            tid,
+            filename=file.filename,
+            content_type=file.content_type,
+            data=data,
+        )
 
 
 @router.get("/tickets/{tid}/attachment")
@@ -39,9 +54,17 @@ def attachment_url(
     svc: TicketService = Depends(get_ticket_service),
 ):
     """GET /tickets/{id}/attachment — short-lived signed URL for the file."""
-    result = svc.attachment_url(tid, ttl)
-    result["url"] = f"{str(request.base_url).rstrip('/')}{result['url']}"
-    return result
+    with flow_operation(
+        "attachment.url",
+        operation="tickets.attachment_url",
+        method="GET",
+        path=f"/api/tickets/{tid}/attachment",
+        ticket_ref=tid,
+    ) as event:
+        result = svc.attachment_url(tid, ttl)
+        result["url"] = f"{str(request.base_url).rstrip('/')}{result['url']}"
+        event["expires_in_seconds"] = result["expiresInSeconds"]
+        return result
 
 
 @router.get("/attachments/file/{token}", name="download_attachment")

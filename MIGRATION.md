@@ -16,9 +16,9 @@ stored in `users.password_hash`, and attachment bytes are stored in
 5. Run `python scripts/provision_users.py` to issue new initial credentials.
    Supabase Auth credentials cannot be carried over because their hashes are
    managed separately from the application tables.
-6. Re-export/re-upload existing Supabase Storage objects. The old bucket's
-   bytes are not included in `pg_dump`; only attachment metadata is in the
-   relational export.
+6. Re-export existing ticket-attachment bytes from Supabase Storage; `pg_dump`
+   does not include those objects. Policy PDFs can be regenerated and seeded
+   into PostgreSQL with `python scripts/seed_knowledge_base.py`.
 7. Run the offline test suite, then `pytest -m integration` against the target
    database before switching the frontend.
 

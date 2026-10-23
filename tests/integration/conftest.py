@@ -20,7 +20,12 @@ def live():
     health = client.get("/health")
     assert health.status_code == 200
 
-    users = client.get("/api/users").json()
+    users_response = client.get("/api/users")
+    assert users_response.status_code == 200, (
+        "Could not read users from PostgreSQL; check DATABASE_URL and database availability."
+    )
+    users = users_response.json()
+    assert isinstance(users, list), "PostgreSQL /api/users returned an invalid response."
     if len(users) < 7:
         pytest.skip("PostgreSQL users not seeded — run schema.sql first")
 

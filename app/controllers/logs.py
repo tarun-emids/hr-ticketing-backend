@@ -12,12 +12,20 @@ Design guardrails (see §4/§5 of the observability spec):
 - the endpoint never throws non-HTTP exceptions: ingestion failures are
   logged on our side and still return 202 (logging must never break
   ticket flows, including this one).
+
+Observability: deliberately NO started/completed events here — the ingest
+hop already gets its per-request middleware line, and layer events would
+make the log sink self-referential. Only rejections get a dedicated record:
+``logs.ingest.rejected`` (WARNING, rate limiter tripped) — diagnosable
+without logging any payload contents; validation rejections stay visible
+through the standard 422 middleware line.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app.deps import get_log_ingest_service
 from app.models import LogIngestRequest
+from app.observability import flow_warning
 from app.services.log_ingest_service import LogIngestService
 
 router = APIRouter(prefix="/logs", tags=["logs"])
@@ -32,6 +40,9 @@ def ingest_frontend_events(
     """Accept 1..20 validated frontend log events; writes to the shared log."""
     client_ip = request.client.host if request.client else "unknown"
     if not svc.allow(client_ip):
+        # Safe diagnostic only: the threshold — no payload contents; the
+        # hop's own request_id arrives via the record formatters.
+        flow_warning("logs.ingest.rejected", operation="logs.ingest", limit_per_minute=60)
         raise HTTPException(status_code=429, detail="Too many log events; slow down.")
     try:
         return {"accepted": svc.ingest(payload)}

@@ -12,6 +12,7 @@ from psycopg_pool import ConnectionPool, PoolTimeout
 
 from app.observability import db_span
 from app.resilience import CircuitOpenError, db_breaker
+from app.retries import classify_mode, retry_call
 
 UUID_RE = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
@@ -43,9 +44,9 @@ def _db_failure(exc: BaseException) -> bool:
         return True
     if isinstance(exc, psycopg.Error):
         state = exc.sqlstate or ""
-        if state.startswith(("23", "22", "42")):
+        if state == "57014" or state.startswith(("22", "23", "28", "42")):
             return False
-        return state.startswith(("08", "28", "53", "57")) or isinstance(
+        return state.startswith(("08", "53", "54", "57", "58")) or isinstance(
             exc, (psycopg.OperationalError, psycopg.InterfaceError)
         )
     return False
@@ -76,7 +77,10 @@ def run(
             f"db.postgresql.{table}.{operation}",
             {"db.system": "postgresql", "db.operation": operation, "db.sql.table": table},
         ):
-            return db_breaker.call(execute, is_failure=_db_failure)
+            return retry_call(
+                lambda: db_breaker.call(execute, is_failure=_db_failure),
+                mode=classify_mode(sql),
+            )
     except CircuitOpenError:
         raise HTTPException(
             status_code=503,
