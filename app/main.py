@@ -39,6 +39,7 @@ from app.controllers import (
     tickets,
     users,
 )
+from app.rag import controller as assistant
 from app.resilience import breakers_snapshot
 from app.services.notification_service import (
     SLA_SWEEP_INTERVAL_SECONDS,
@@ -54,14 +55,6 @@ from app.observability import (
     record_error_on_current_span,
     setup_logging,
     setup_tracing,
-)
-from app.repositories.notification_repository import NotificationRepository
-from app.repositories.ticket_repository import TicketRepository
-from app.repositories.user_repository import UserRepository
-from app.resilience import breakers_snapshot
-from app.services.notification_service import (
-    SLA_SWEEP_INTERVAL_SECONDS,
-    NotificationService,
 )
 
 setup_logging()
@@ -145,8 +138,10 @@ app.include_router(notifications.router, prefix="/api")
 app.include_router(users.router, prefix="/api")
 # frontend log events → the same backend/logs/app.log backend records use
 app.include_router(logs.router, prefix="/api")
-# knowledge base (policy library: search, metadata, signed PDF URLs)
+# knowledge base (policy library: search, metadata, streamed policy PDFs)
 app.include_router(knowledge_base.router, prefix="/api")
+# HR assistant (RAG over the knowledge base, app/rag/)
+app.include_router(assistant.router, prefix="/api")
 
 
 @app.get("/")

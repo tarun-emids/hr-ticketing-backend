@@ -17,6 +17,8 @@ from app.repositories.kb_repository import KbRepository
 from app.repositories.notification_repository import NotificationRepository
 from app.repositories.ticket_repository import TicketRepository
 from app.repositories.user_repository import UserRepository
+from app.rag.repository import RagRepository
+from app.rag.service import RagService
 from app.services.auth_service import AuthService
 from app.services.draft_service import DraftService
 from app.services.kb_service import KbService
@@ -106,3 +108,17 @@ def get_kb_service(
     users: UserRepository = Depends(get_user_repo),
 ) -> KbService:
     return KbService(kb, users)
+
+
+# -- HR assistant (app/rag) ---------------------------------------------------
+
+
+def get_rag_repo(database=Depends(get_database)) -> RagRepository:
+    return RagRepository(database)
+
+
+def get_rag_service(
+    rag: RagRepository = Depends(get_rag_repo),
+    users: UserRepository = Depends(get_user_repo),
+) -> RagService:
+    return RagService(rag, users)

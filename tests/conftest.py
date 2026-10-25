@@ -167,6 +167,24 @@ class SQLitePool:
               effective_date TEXT, created_at TEXT,
               updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+00:00', 'now'))
             );
+            CREATE TABLE kb_document_chunks (
+              id TEXT PRIMARY KEY, document_id TEXT NOT NULL REFERENCES kb_documents(id)
+                ON DELETE CASCADE,
+              document_slug TEXT NOT NULL, ref TEXT NOT NULL, title TEXT NOT NULL,
+              audience TEXT NOT NULL, section TEXT NOT NULL DEFAULT '',
+              block_no INTEGER NOT NULL, body TEXT NOT NULL,
+              embedding JSON NOT NULL,
+              created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+00:00', 'now')),
+              UNIQUE (document_slug, block_no)
+            );
+            CREATE TABLE assistant_queries (
+              id TEXT PRIMARY KEY,
+              employee_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+              employee_name TEXT NOT NULL DEFAULT '', employee_role TEXT NOT NULL DEFAULT '',
+              question TEXT NOT NULL, answer TEXT NOT NULL,
+              sources JSON NOT NULL DEFAULT '[]',
+              created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+00:00', 'now'))
+            );
             CREATE TRIGGER tickets_updated AFTER UPDATE ON tickets
               WHEN NEW.updated_at = OLD.updated_at BEGIN
                 UPDATE tickets SET updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00', 'now')

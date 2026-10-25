@@ -16,6 +16,11 @@ Every run is idempotent: existing slugs are updated in place (content,
 metadata, size), new ones inserted. Pre-rendered PDFs live in
 scripts/knowledge_base_pdfs/ (committed to the repo) — point --pdf-dir at
 another folder only if you render them elsewhere.
+
+When RAG_HF_TOKEN is configured the run ALSO refreshes the assistant's
+citable paragraph chunks (kb_document_chunks, embedded with Hugging Face
+feature-extraction, app/rag/) for every seeded document. Pass --skip-chunks
+to seed only the PDFs, or run without the token to skip chunking with a note.
 """
 import argparse
 import sys
@@ -27,12 +32,22 @@ if str(REPO_ROOT) not in sys.path:
 
 from dotenv import load_dotenv  # noqa: E402
 import psycopg  # noqa: E402
+from psycopg.types.json import Jsonb  # noqa: E402
 
 from app.kb_seed import DOCUMENTS, normalize, validate  # noqa: E402
+from app.rag.chunking import chunks_from_document  # noqa: E402
+from app.rag.embeddings import embed_texts  # noqa: E402
+from app.rag import settings as rag_settings  # noqa: E402
 
 DEFAULT_PDF_DIR = REPO_ROOT / "scripts" / "knowledge_base_pdfs"
 ENV_PATH = REPO_ROOT / ".env"
 
+CHUNK_INSERT_SQL = """
+    INSERT INTO kb_document_chunks (
+        document_id, document_slug, ref, title, audience,
+        section, block_no, body, embedding
+    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+"""  # rows are DELETEd per document first, so this stays a plain insert
 UPSERT_SQL = """
     INSERT INTO kb_documents (
         slug, ref, title, category, audience, summary, keywords,
@@ -82,6 +97,11 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true", help="print the plan without touching the DB")
     parser.add_argument("--only", default="", help="substring filter on slug")
     parser.add_argument("--pdf-dir", default="", help="alternate directory containing the PDFs")
+    parser.add_argument(
+        "--skip-chunks",
+        action="store_true",
+        help="seed only the PDF documents; skip embedding paragraphs for the assistant",
+    )
     args = parser.parse_args()
 
     pdf_dir = Path(args.pdf_dir) if args.pdf_dir else DEFAULT_PDF_DIR
@@ -127,9 +147,72 @@ def main() -> int:
                 updated += 1 if doc["slug"] in existing else 0
                 inserted += 0 if doc["slug"] in existing else 1
             print(f"rows updated: {updated}, rows inserted: {inserted}")
+            if args.skip_chunks:
+                print("--skip-chunks set: assistant paragraphs not touched")
+            elif not rag_settings.HF_TOKEN:
+                print(
+                    "RAG_HF_TOKEN not set: assistant paragraphs skipped "
+                    "(the assistant answers 'not configured'; rerun with the "
+                    "token to enable it)"
+                )
+            else:
+                ids = {
+                    slug: doc_id
+                    for slug, doc_id in cur.execute(
+                        "SELECT slug, id FROM kb_documents"
+                    ).fetchall()
+                }
+                _seed_chunks(cur, plan, ids)
         conn.commit()
     print(f"done: {inserted} inserted / {updated} updated kb_documents rows")
     return 0
+
+
+def _seed_chunks(cur, plan: list, ids: dict) -> None:
+    """Refresh the assistant's citable paragraph store for every document.
+
+    Per document: cut blocks into citation chunks (app/rag/chunking),
+    embed each chunk once, then REPLACE the document's rows — so a partially
+    seeded library can never mix old and new content. One embedding failure
+    leaves that document (and the rest) intact and the run still reports it.
+    """
+    embedded = failed = 0
+    for doc, _, _ in plan:
+        chunks = chunks_from_document(doc)
+        if not chunks:
+            continue
+        document_id = ids.get(doc["slug"])
+        if document_id is None:
+            print(f"  !! missing document id for {doc['ref']} — chunks skipped")
+            failed += 1
+            continue
+        try:
+            vectors = embed_texts([chunk["embedding_text"] for chunk in chunks])
+        except Exception as exc:  # embedder maps provider errors to user text
+            print(f"  !! embedding failed for {doc['ref']}: {exc}")
+            failed += 1
+            continue
+        cur.execute("DELETE FROM kb_document_chunks WHERE document_id = %s", (document_id,))
+        cur.executemany(
+            CHUNK_INSERT_SQL,
+            [
+                (
+                    document_id,
+                    doc["slug"],
+                    doc["ref"],
+                    doc["title"],
+                    doc["audience"],
+                    chunk["section"],
+                    chunk["block_no"],
+                    chunk["body"],
+                    Jsonb(vector),
+                )
+                for chunk, vector in zip(chunks, vectors)
+            ],
+        )
+        embedded += 1
+        print(f"  chunks refreshed for {doc['ref']}: {len(chunks)} paragraphs")
+    print(f"assistant chunks: {embedded} docs embedded, {failed} failed")
 
 
 if __name__ == "__main__":

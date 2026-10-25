@@ -91,6 +91,56 @@ replace rows by editing `scripts/knowledge_base_pdfs/` + re-running the
 loader. Public per-document metadata (title, audience pools, keywords,
 search blob) comes from `app/kb_seed/`.
 
+## HR assistant (RAG over the knowledge base)
+
+`app/rag/` implements the floating HR-assistant chat: questions are answered
+from the policy library with mandatory citations. One file per concern:
+
+| File | Concern |
+| --- | --- |
+| `settings.py` | env knobs (token/model/URLs/top-k) — `RAG_HF_TOKEN` empty = assistant answers "not configured" |
+| `chunking.py` | pure rules: knowledge blocks -> citable paragraph chunks with `[REF ¶n]` labels |
+| `embeddings.py` | Hugging Face feature-extraction + in-Python cosine ranking (no pgvector) |
+| `llm.py` | Hugging Face chat-completions (OpenAI-compatible router) |
+| `repository.py` | SQL: read citation chunks + write `assistant_queries` audit rows |
+| `service.py` | retrieval -> prompt -> `[REF ¶block]` reconciliation -> sources footer -> audit |
+| `controller.py` | `POST /api/assistant/ask` (`{employeeId, question}` -> `{id, answer, citations}`) |
+
+Data model (schema.sql): `kb_document_chunks` — one citable paragraph per
+`kb_documents` row, embedded at SEED time; `assistant_queries` — employee
+snapshot + question + answer + cited sources. The audit table is never read
+back by the UI: closing the assistant window resets the conversation by design.
+
+Citations are enforced in the service, not begged from the model: markers
+(`[KB-E-01 ¶7]`) are parsed and matched against chunks the retrieval actually
+offered, then a `Sources:` footer naming every used paragraph is appended to
+every answer. Role pools filter retrieval exactly like the KB itself
+(employee -> employee policies; agents see both pools) — resolved server-side
+so editing requests cannot widen visibility.
+
+The Hugging Face upstream is its own circuit breaker (`assistant` in
+`GET /health/deps`), with neutral handling for token/model errors, so a flaky
+free tier degrades like any other dependency.
+
+### Configure
+
+1. `.env` (see `.env.example`): `RAG_HF_TOKEN=<free token from
+   huggingface.co/settings/tokens>`; fine-tune `RAG_CHAT_MODEL` (any model
+   your token can serve) and `RAG_TOP_K` if needed.
+2. Seeding adds the paragraph chunks automatically
+   (`python scripts/seed_knowledge_base.py`; use `--skip-chunks` for
+   PDFs-only or run without the token to skip embedding).
+
+### Smoke test
+
+```bash
+curl -X POST http://localhost:8000/api/assistant/ask \
+  -H "Content-Type: application/json" \
+  -d '{"employeeId": "<uuid>", "question": "How many PTO days carry over?"}'
+# {"id": "...", "answer": "Five PTO days carry over. [KB-E-01 ¶4]\n\nSources:\nKB-E-01 ¶4 — ...",
+#  "citations": [{"ref": "KB-E-01", "slug": "leave-and-time-off-policy", "blockNo": 4, ...}]}
+```
+
 ## Moving existing Supabase data
 
 Supabase's relational tables are PostgreSQL tables and can be exported with

@@ -124,6 +124,16 @@ class LogIngestRequest(CamelModel):
     events: list[FrontendLogEvent] = Field(min_length=1, max_length=20)
 
 
+# Assistant (app/rag) ---------------------------------------------------------
+
+class AssistantQuestion(CamelModel):
+    """One grounded question to the HR assistant ([REF ¶block] citations
+    resolved server-side; the answer never depends on chat history)."""
+
+    employee_id: str
+    question: str = Field(min_length=2, max_length=500)
+
+
 # ---------------------------------------------------------------------------
 # Serializers (PostgreSQL row -> API/frontend shape)
 # ---------------------------------------------------------------------------

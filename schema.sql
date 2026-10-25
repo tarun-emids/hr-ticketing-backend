@@ -169,3 +169,46 @@ DROP TRIGGER IF EXISTS trg_kb_documents_updated ON kb_documents;
 CREATE TRIGGER trg_kb_documents_updated
   BEFORE UPDATE ON kb_documents
   FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+-- ------------------------------------------------------------
+-- 1b. HR assistant (RAG) storage — app/rag/
+--   kb_document_chunks: one CITABLE paragraph per row, cut from the same
+--     block content the policy PDFs render from (app/kb_seed). Retrieval
+--     takes place in the app (cosine over `embedding`) — no pgvector needed.
+--     Properties: refreshed by scripts/seed_knowledge_base.py alongside the
+--     document bytes; audience is copied so role pools filter in SQL.
+--   assistant_queries: one AUDIT row per answered question (employee
+--     snapshot + question + answer + cited sources). UI never reads it —
+--     reopening the assistant always starts clean.
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS kb_document_chunks (
+  id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  document_id   uuid NOT NULL REFERENCES kb_documents (id) ON DELETE CASCADE,
+  document_slug text NOT NULL,
+  ref           text NOT NULL,
+  title         text NOT NULL,
+  audience      text NOT NULL CHECK (audience IN ('employee', 'hr')),
+  section       text NOT NULL DEFAULT '',
+  block_no      int NOT NULL,
+  body          text NOT NULL,
+  embedding     jsonb NOT NULL,
+  created_at    timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (document_slug, block_no)
+);
+
+CREATE INDEX IF NOT EXISTS idx_kb_document_chunks_audience
+  ON kb_document_chunks (audience);
+
+CREATE TABLE IF NOT EXISTS assistant_queries (
+  id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  employee_id   uuid NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+  employee_name text NOT NULL DEFAULT '',
+  employee_role text NOT NULL DEFAULT '',
+  question      text NOT NULL,
+  answer        text NOT NULL,
+  sources       jsonb NOT NULL DEFAULT '[]'::jsonb,
+  created_at    timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_assistant_queries_employee
+  ON assistant_queries (employee_id, created_at DESC);
