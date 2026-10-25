@@ -42,7 +42,7 @@ def verify_password(password: str, encoded: str) -> bool:
         expected = decode(raw_digest)
         if len(salt) != _SALT_BYTES or len(expected) != _KEY_BYTES:
             return False
-    except (AttributeError, ValueError):
+    except AttributeError, ValueError:
         return False
     actual = hashlib.scrypt(
         password.encode(), salt=salt, n=_SCRYPT_N, r=_SCRYPT_R, p=_SCRYPT_P, dklen=_KEY_BYTES
