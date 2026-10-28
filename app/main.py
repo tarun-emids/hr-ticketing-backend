@@ -29,6 +29,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app import config as app_config
+from app.admin import controller as admin
 from app.controllers import (
     attachments,
     auth,
@@ -142,6 +143,8 @@ app.include_router(logs.router, prefix="/api")
 app.include_router(knowledge_base.router, prefix="/api")
 # HR assistant (RAG over the knowledge base, app/rag/)
 app.include_router(assistant.router, prefix="/api")
+# admin console (accounts, KB documents, analytics — app/admin/)
+app.include_router(admin.router, prefix="/api")
 
 
 @app.get("/")

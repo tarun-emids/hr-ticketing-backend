@@ -11,6 +11,10 @@ and every repository in one place.
 from fastapi import Depends
 
 from app import config as app_config
+from app.admin.accounts import AdminAccountService
+from app.admin.analytics_service import AdminAnalyticsService
+from app.admin.kb_docs import AdminKbDocService
+from app.admin.repository import AdminRepository
 from app.repositories.attachment_storage import AttachmentStorageRepository
 from app.repositories.draft_repository import DraftRepository
 from app.repositories.kb_repository import KbRepository
@@ -122,3 +126,30 @@ def get_rag_service(
     users: UserRepository = Depends(get_user_repo),
 ) -> RagService:
     return RagService(rag, users)
+
+
+# -- Admin console (app/admin) --------------------------------------------------
+
+
+def get_admin_repo(database=Depends(get_database)) -> AdminRepository:
+    return AdminRepository(database)
+
+
+def get_admin_account_service(
+    repo: AdminRepository = Depends(get_admin_repo),
+    users: UserRepository = Depends(get_user_repo),
+) -> AdminAccountService:
+    return AdminAccountService(repo, users)
+
+
+def get_admin_kb_service(
+    repo: AdminRepository = Depends(get_admin_repo),
+) -> AdminKbDocService:
+    return AdminKbDocService(repo)
+
+
+def get_admin_analytics_service(
+    repo: AdminRepository = Depends(get_admin_repo),
+    users: UserRepository = Depends(get_user_repo),
+) -> AdminAnalyticsService:
+    return AdminAnalyticsService(repo, users)

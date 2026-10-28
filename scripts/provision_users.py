@@ -1,4 +1,8 @@
-"""Set or reset the initial password for provisioned HR Desk users."""
+"""Set or reset the initial password for provisioned HR Desk users.
+
+`--admin <email>` additionally promotes/creates one account into the admin
+role (the bootstrap for the admin console persona — the console itself can
+create more admin accounts afterwards)."""
 
 import argparse
 import getpass
@@ -28,6 +32,12 @@ def main() -> int:
         action="store_true",
         help="Skip the confirmation before replacing account password hashes.",
     )
+    parser.add_argument(
+        "--admin",
+        metavar="EMAIL",
+        default="",
+        help="Promote/create this email as an admin account (the first admin).",
+    )
     args = parser.parse_args()
 
     password = (
@@ -56,8 +66,37 @@ def main() -> int:
         users.set_password_hash(account["id"], hash_password(password))
         print(f"  password set for {account['email']} ({account['role']})")
 
+    if args.admin:
+        target_email = args.admin.strip().lower()
+        match = next(
+            (a for a in accounts if a["email"].lower() == target_email), None
+        )
+        if match:
+            if match.get("role") != "admin":
+                users_repo_role_update(match["id"], users)
+                print(f"  promoted to admin: {match['email']}")
+            else:
+                print(f"  already admin: {match['email']}")
+            target = match
+        else:
+            print(f"  !! no account with email {target_email} — create one via the "
+                  "admin console (or an SQL insert), then re-run --admin.")
+            target = None
+        if target is None:
+            return 1
+
     print(f"\nDone. updated={len(accounts)}")
     return 0
+
+
+def users_repo_role_update(account_id: str, users) -> None:
+    """Role promotion via the raw row (thin call, kept beside the password
+    seeding so the FIRST admin lands with the same one command)."""
+    from app.config import get_database
+
+    from app.admin.repository import AdminRepository
+
+    AdminRepository(get_database()).set_role(account_id, "admin")
 
 
 if __name__ == "__main__":

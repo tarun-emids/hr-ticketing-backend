@@ -4,12 +4,19 @@ CREATE TABLE IF NOT EXISTS users (
   id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   name          text NOT NULL,
   email         text NOT NULL UNIQUE,
-  role          text NOT NULL CHECK (role IN ('employee', 'agent')),
+  role          text NOT NULL CHECK (role IN ('employee', 'agent', 'admin')),
   password_hash text,
   created_at    timestamptz NOT NULL DEFAULT now()
 );
 
 ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash text;
+
+-- Admin persona upgrade (2026-10): widen the role check in place for
+-- databases created before admin existed. Constraint name is the postgres
+-- default for an inline CHECK (users_role_check); IF EXISTS keeps reruns safe.
+ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check;
+ALTER TABLE users ADD CONSTRAINT users_role_check
+  CHECK (role IN ('employee', 'agent', 'admin'));
 
 CREATE TABLE IF NOT EXISTS tickets (
   id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),

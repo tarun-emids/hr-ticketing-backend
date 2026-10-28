@@ -113,7 +113,7 @@ class SQLitePool:
             """
             CREATE TABLE users (
               id TEXT PRIMARY KEY, name TEXT NOT NULL, email TEXT NOT NULL UNIQUE,
-              role TEXT NOT NULL, password_hash TEXT,
+              role TEXT NOT NULL CHECK (role IN ('employee', 'agent', 'admin')), password_hash TEXT,
               created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+00:00', 'now'))
             );
             CREATE TABLE tickets (
