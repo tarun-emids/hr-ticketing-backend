@@ -1,9 +1,9 @@
 """HR assistant (RAG over the knowledge base) — one app, one file per concern.
 
-    settings.py    env knobs (HF token, model/endpoint URLs, top-k)
+    settings.py    env knobs (Gemini API key, model/endpoint URLs, top-k)
     chunking.py    pure rules: knowledge-block -> citable paragraph chunks
-    embeddings.py  Hugging Face feature-extraction client + cosine search
-    llm.py         Hugging Face chat-completions client (behind its breaker)
+    embeddings.py  Google Gemini embeddings client + cosine search
+    llm.py         Google Gemini chat-completions client (behind its breaker)
     repository.py  SQL persistence: chunk store + assistant_queries audit rows
     service.py     orchestration: retrieve -> prompt -> cite -> persist
     controller.py  the HTTP face (POST /api/assistant/ask)

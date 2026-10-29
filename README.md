@@ -57,7 +57,8 @@ Use Python 3.14 (the project uses lazy class-body annotations).
    ```bash
    python -m venv .venv
    source .venv/bin/activate       # Windows: .venv\Scripts\activate
-   pip install -r requirements.txt pytest
+   python -m pip install --upgrade pip     # avoids stale-global-pkg conflict errors
+   pip install -r requirements.txt pytest   # pytest & ruff are dev tools, ad hoc
    python scripts/provision_users.py
    uvicorn app.main:app --reload --port 8000
    ```

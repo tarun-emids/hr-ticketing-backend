@@ -186,10 +186,10 @@ db_breaker = CircuitBreaker(
     recovery_timeout=app_config.BREAKER_RECOVERY_SECONDS,
 )
 
-# The assistant talks to a SECOND external dependency (Hugging Face Inference
-# Providers) for embeddings + answers, so "new external dependency ⇒ new
-# breaker" it gets its own circuit. Neutral outcomes (token rejected, model
-# not found) are classified at the call site — app/rag/upstream_failure().
+# The assistant talks to a SECOND external dependency (the Google Gemini API)
+# for embeddings + answers, so "new external dependency ⇒ new breaker" it gets
+# its own circuit. Neutral outcomes (key rejected, model not found) are
+# classified at the call site — app/rag/upstream_failure().
 assistant_breaker = CircuitBreaker(
     "assistant",
     failure_threshold=app_config.BREAKER_FAILURE_THRESHOLD,

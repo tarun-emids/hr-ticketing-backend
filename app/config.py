@@ -39,6 +39,9 @@ TRACE_ENABLED = os.getenv("TRACE_ENABLED", "true").strip().lower() not in (
 )
 OTEL_SERVICE_NAME = os.getenv("OTEL_SERVICE_NAME", "hrdesk-api")
 OTEL_EXPORTER_OTLP_ENDPOINT = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
+# Collapse repeated exporter-failure log lines ("connection refused …") to at
+# most one raw line per window (seconds) plus a backend summary. 0 disables.
+OTEL_EXPORT_ERROR_LOG_WINDOW_SECONDS = int(os.getenv("OTEL_EXPORT_ERROR_LOG_WINDOW_SECONDS", "300"))
 LOG_TO_FILE = os.getenv("LOG_TO_FILE", "true").strip().lower() not in ("false", "0", "no", "off")
 LOG_FILE_PATH = os.getenv("LOG_FILE_PATH") or str(BASE_DIR / "logs" / "app.log")
 LOG_FILE_RETENTION_DAYS = int(os.getenv("LOG_FILE_RETENTION_DAYS", "14"))

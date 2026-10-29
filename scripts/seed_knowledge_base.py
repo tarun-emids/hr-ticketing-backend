@@ -17,11 +17,12 @@ metadata, size), new ones inserted. Pre-rendered PDFs live in
 scripts/knowledge_base_pdfs/ (committed to the repo) — point --pdf-dir at
 another folder only if you render them elsewhere.
 
-When RAG_HF_TOKEN is configured the run ALSO refreshes the assistant's
-citable paragraph chunks (kb_document_chunks, embedded with Hugging Face
-feature-extraction, app/rag/) for every seeded document. Pass --skip-chunks
-to seed only the PDFs, or run without the token to skip chunking with a note.
+When RAG_GEMINI_API_KEY is configured the run ALSO refreshes the assistant's
+citable paragraph chunks (kb_document_chunks, embedded with the Gemini
+embeddings endpoint, app/rag/) for every seeded document. Pass --skip-chunks
+to seed only the PDFs, or run without the key to skip chunking with a note.
 """
+
 import argparse
 import sys
 from pathlib import Path
@@ -30,14 +31,14 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from dotenv import load_dotenv  # noqa: E402
 import psycopg  # noqa: E402
+from dotenv import load_dotenv  # noqa: E402
 from psycopg.types.json import Jsonb  # noqa: E402
 
-from app.kb_seed import DOCUMENTS, normalize, validate  # noqa: E402
+from app.kb_seed import normalize, validate  # noqa: E402
+from app.rag import settings as rag_settings  # noqa: E402
 from app.rag.chunking import chunks_from_document  # noqa: E402
 from app.rag.embeddings import embed_texts  # noqa: E402
-from app.rag import settings as rag_settings  # noqa: E402
 
 DEFAULT_PDF_DIR = REPO_ROOT / "scripts" / "knowledge_base_pdfs"
 ENV_PATH = REPO_ROOT / ".env"
@@ -94,7 +95,9 @@ def database_url() -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--dry-run", action="store_true", help="print the plan without touching the DB")
+    parser.add_argument(
+        "--dry-run", action="store_true", help="print the plan without touching the DB"
+    )
     parser.add_argument("--only", default="", help="substring filter on slug")
     parser.add_argument("--pdf-dir", default="", help="alternate directory containing the PDFs")
     parser.add_argument(
@@ -130,18 +133,25 @@ def main() -> int:
     inserted, updated = 0, 0
     with psycopg.connect(database_url()) as conn:
         with conn.cursor() as cur:
-            existing = {
-                row[0]
-                for row in cur.execute("SELECT slug FROM kb_documents").fetchall()
-            }
+            existing = {row[0] for row in cur.execute("SELECT slug FROM kb_documents").fetchall()}
             for doc, pdf_bytes, size in plan:
                 cur.execute(
                     UPSERT_SQL,
                     (
-                        doc["slug"], doc["ref"], doc["title"], doc["category"],
-                        doc["audience"], doc["summary"], doc["keywords"],
-                        doc["search_text"], pdf_bytes, "application/pdf", size,
-                        None, doc.get("version", "v1.0"), doc["effective_date"],
+                        doc["slug"],
+                        doc["ref"],
+                        doc["title"],
+                        doc["category"],
+                        doc["audience"],
+                        doc["summary"],
+                        doc["keywords"],
+                        doc["search_text"],
+                        pdf_bytes,
+                        "application/pdf",
+                        size,
+                        None,
+                        doc.get("version", "v1.0"),
+                        doc["effective_date"],
                     ),
                 )
                 updated += 1 if doc["slug"] in existing else 0
@@ -149,18 +159,16 @@ def main() -> int:
             print(f"rows updated: {updated}, rows inserted: {inserted}")
             if args.skip_chunks:
                 print("--skip-chunks set: assistant paragraphs not touched")
-            elif not rag_settings.HF_TOKEN:
+            elif not rag_settings.GEMINI_API_KEY:
                 print(
-                    "RAG_HF_TOKEN not set: assistant paragraphs skipped "
+                    "RAG_GEMINI_API_KEY not set: assistant paragraphs skipped "
                     "(the assistant answers 'not configured'; rerun with the "
-                    "token to enable it)"
+                    "key to enable it)"
                 )
             else:
                 ids = {
                     slug: doc_id
-                    for slug, doc_id in cur.execute(
-                        "SELECT slug, id FROM kb_documents"
-                    ).fetchall()
+                    for slug, doc_id in cur.execute("SELECT slug, id FROM kb_documents").fetchall()
                 }
                 _seed_chunks(cur, plan, ids)
         conn.commit()

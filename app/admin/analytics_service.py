@@ -41,12 +41,23 @@ class AdminAnalyticsService:
         return [r for r in self.scan() if analytics._within(r.get("created_at"), seconds)]
 
     def overview(self, window: str) -> dict:
-        """Org-wide KPI band + category/repetition breakdown for the window."""
+        """Org-wide KPI band + the dashboard chart inputs for the window.
+
+        trend/heatmap/aging/SLA semantics: trend + cataloged backlog run on
+        the window's rows (buckets canvas the window itself); heatmap, aging
+        and SLA run on the FULL scan — they describe the whole desk history
+        (an activity clock and the current unresolved pile do not fit inside
+        a switchable window meaningfully)."""
         rows = self._windowed(window)
+        full = self.scan() if window != "all" else rows
         return {
             "window": window,
             **analytics.overall_metrics(rows),
             "categories": analytics.category_breakdown(rows),
+            "trend": analytics.trend(rows, window),
+            "heatmap": analytics.heatmap(full),
+            "aging": analytics.aging(full),
+            "sla": analytics.sla_compliance(full),
         }
 
     def leaderboard(self, period: str) -> list[dict]:

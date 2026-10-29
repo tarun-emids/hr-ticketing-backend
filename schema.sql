@@ -126,14 +126,57 @@ CREATE TABLE IF NOT EXISTS attachments (
   created_at   timestamptz NOT NULL DEFAULT now()
 );
 
+-- Seeded personas: 1 admin + 3 employees + 3 HR agents (7 accounts).
+-- Emails carry no role marker (.hr@) on purpose: a person keeps one address
+-- across promotions/demotions — the email is the sign-in identity and only
+-- users.role changes. Naming rule: first name, lowercase @acme.com.
+-- Legacy `.hr@` accounts (created before this rule) are renamed in place,
+-- and a prior run of this file under an intermediate ordering may have left
+-- BOTH variants behind (an old `.hr@` plus its freshly seeded twin). The
+-- three steps below handle every state idempotently:
+--   1/ rename `.hr@` -> clean, but ONLY when the clean address is free
+--      (guarded, so a duplicate pair never trips the unique constraint);
+--   2/ when both variants DO exist, delete the freshly-seeded twin — but
+--      only while it is genuinely unreferenced (the original `.hr@` row
+--      may already be pointed at by replies/notifications/assignments);
+--      if somebody did real work on the clean login, the delete skips it
+--      and the situation must be resolved manually;
+--   3/ rename again for whatever the first pass had to skip.
+-- After that the seed insert finds clean emails already occupied and skips.
+-- One more reminder for existing installs: an account created earlier as
+-- 'employee' keeps that role until
+--   `python scripts/provision_users.py --admin tomas@acme.com`
+-- promotes it (the ON CONFLICT DO NOTHING here never rewrites roles).
+UPDATE users SET email = replace(email, '.hr@acme.com', '@acme.com')
+WHERE email LIKE '%.hr@acme.com'
+  AND NOT EXISTS (
+    SELECT 1 FROM users u2
+    WHERE u2.email = replace(users.email, '.hr@acme.com', '@acme.com')
+  );
+
+DELETE FROM users twin
+WHERE twin.email IN (
+    SELECT replace(p.email, '.hr@acme.com', '@acme.com')
+    FROM users p WHERE p.email LIKE '%.hr@acme.com'
+  )
+  AND NOT EXISTS (SELECT 1 FROM replies r WHERE r.author_id = twin.id)
+  AND NOT EXISTS (
+    SELECT 1 FROM tickets t
+    WHERE t.employee_id = twin.id OR t.assignee_id = twin.id OR t.closed_by = twin.id
+  )
+  AND NOT EXISTS (SELECT 1 FROM notifications n WHERE n.recipient_id = twin.id);
+
+UPDATE users SET email = replace(email, '.hr@acme.com', '@acme.com')
+WHERE email LIKE '%.hr@acme.com';
+
 INSERT INTO users (name, email, role) VALUES
   ('Priya Sharma', 'priya@acme.com',     'employee'),
   ('Marcus Webb',  'marcus@acme.com',    'employee'),
   ('Dana Cole',    'dana@acme.com',      'employee'),
-  ('Tomas Nowak',  'tomas@acme.com',     'employee'),
-  ('Alicia Gomez', 'alicia.hr@acme.com', 'agent'),
-  ('Ben Osei',     'ben.hr@acme.com',    'agent'),
-  ('Ruth Meyer',   'ruth.hr@acme.com',   'agent')
+  ('Tomas Nowak',  'tomas@acme.com',     'admin'),
+  ('Alicia Gomez', 'alicia@acme.com',    'agent'),
+  ('Ben Osei',     'ben@acme.com',       'agent'),
+  ('Ruth Meyer',   'ruth@acme.com',      'agent')
 ON CONFLICT (email) DO NOTHING;
 
 -- ------------------------------------------------------------

@@ -40,8 +40,15 @@ _SYSTEM_PROMPT = (
     "- Always write any needed citations INLINE, in the exact form "
     "[REF ¶block] where REF is the policy code (e.g. KB-E-01) and block is "
     "the paragraph number from the excerpt header, e.g. [KB-E-01 ¶7].\n"
-    "- Quote or closely paraphrase the cited paragraph's substance on the "
-    "same topic only; do not invent policies, numbers, dates or names.\n"
+    "- Answer in YOUR OWN WORDS, like a helpful HR colleague: explain the "
+    "excerpt's substance in natural prose (short numbers/terms in place), "
+    "not by copying excerpt sentences. The excerpts and your citations are "
+    "the only permitted sources for facts; do not invent policies, numbers, "
+    "dates or names.\n"
+    "- Answer the QUESTION'S INTENT, not just its word match: when one "
+    "excerpt states numbers or rules that directly qualify another's "
+    "(e.g. an annual entitlement vs a carry-forward cap), give both, each "
+    "with its own citation — the user gets the complete policy picture.\n"
     "- If the excerpts do not contain the answer, reply exactly: "
     f"{_NOT_FOUND!r} with no citations.\n"
     "- Keep the answer short (max ~120 words), plain prose, no markdown."
@@ -77,9 +84,7 @@ class RagService:
         viewer = self._viewer(viewer_id)
         question = (question or "").strip()
         if len(question) < 2:
-            raise HTTPException(
-                status_code=422, detail="Ask a question of at least 2 characters."
-            )
+            raise HTTPException(status_code=422, detail="Ask a question of at least 2 characters.")
         if len(question) > settings.MAX_QUESTION_CHARS:
             raise HTTPException(
                 status_code=422,
@@ -89,8 +94,8 @@ class RagService:
         pools = pools_for(viewer.get("role"))
         chunks = self._rag.chunks_for_audiences(pools)
 
-        if not settings.HF_TOKEN:
-            answer = "HR assistant is not configured — ask your admin to set RAG_HF_TOKEN."
+        if not settings.GEMINI_API_KEY:
+            answer = "HR assistant is not configured — ask your admin to set RAG_GEMINI_API_KEY."
             sources: list[dict] = []
             citations = []
             answer_body = answer
@@ -103,8 +108,12 @@ class RagService:
             top = embeddings.rank(vector, chunks)[: settings.TOP_K]
             excerpts = "\n\n".join(_excerpt_block(c) for c in top)
             user_prompt = f"POLICY EXCERPTS:\n\n{excerpts}\n\nQUESTION: {question}\n\nAnswer:"
-            answer_body = llm.chat([{"role": "system", "content": _SYSTEM_PROMPT},
-                                    {"role": "user", "content": user_prompt}])
+            answer_body = llm.chat(
+                [
+                    {"role": "system", "content": _SYSTEM_PROMPT},
+                    {"role": "user", "content": user_prompt},
+                ]
+            )
             citations, answer_body = _reconcile_citations(answer_body, top)
             sources = _sources_from(citations if citations else top)
             answer_body = _with_sources_footer(answer_body, sources)
@@ -167,5 +176,3 @@ def _with_sources_footer(answer: str, sources: list[dict]) -> str:
     lines = [f"{s['ref']} ¶{s['blockNo']} — {s['title']} · {s['section']}" for s in sources]
     footer = "\n\nSources:\n" + "\n".join(lines)
     return answer if "Sources:" in answer else answer + footer
-
-

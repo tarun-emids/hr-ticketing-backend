@@ -55,9 +55,7 @@ def _chunk(
     vector,
 ):
     """Seed one citable paragraph against the harness's seeded documents."""
-    document_id = fake.execute("SELECT id FROM kb_documents WHERE slug = %s", (slug,))[0][
-        "id"
-    ]
+    document_id = fake.execute("SELECT id FROM kb_documents WHERE slug = %s", (slug,))[0]["id"]
     fake.execute(
         "INSERT INTO kb_document_chunks (id, document_id, document_slug, ref, title,"
         " audience, section, block_no, body, embedding)"
@@ -86,11 +84,9 @@ def _ask(api, employee_id, question="How many PTO days carry over?"):
 
 @pytest.fixture()
 def grounded(monkeypatch):
-    """A configured assistant: fake token + deterministic embed/chat seams."""
-    monkeypatch.setattr("app.rag.settings.HF_TOKEN", "hf_test_token")
-    monkeypatch.setattr(
-        "app.rag.embeddings.embed_texts", _fake_embed([0.8, 0.6]), raising=True
-    )
+    """A configured assistant: fake key + deterministic embed/chat seams."""
+    monkeypatch.setattr("app.rag.settings.GEMINI_API_KEY", "gem_test_key")
+    monkeypatch.setattr("app.rag.embeddings.embed_texts", _fake_embed([0.8, 0.6]), raising=True)
     return monkeypatch
 
 
@@ -99,12 +95,26 @@ def grounded(monkeypatch):
 
 def test_employee_answer_cites_employee_pool_only(api, grounded):
     _chunk(
-        api.fake, "leave-policy", "KB-E-01", "Leave Policy", "employee",
-        "1. Carryover", 1, "Five PTO days carry over each quarter.", [0.8, 0.6],
+        api.fake,
+        "leave-policy",
+        "KB-E-01",
+        "Leave Policy",
+        "employee",
+        "1. Carryover",
+        1,
+        "Five PTO days carry over each quarter.",
+        [0.8, 0.6],
     )
     _chunk(
-        api.fake, "payroll-run-sop", "KB-HR-02", "Payroll Run", "hr",
-        "2. Cutoffs", 4, "HR cuts payroll at the 24th.", [0.8, 0.6],
+        api.fake,
+        "payroll-run-sop",
+        "KB-HR-02",
+        "Payroll Run",
+        "hr",
+        "2. Cutoffs",
+        4,
+        "HR cuts payroll at the 24th.",
+        [0.8, 0.6],
     )
     grounded.setattr(
         "app.rag.llm.chat", _fake_llm("Five PTO days carry over each quarter. [KB-E-01 ¶1]")
@@ -125,12 +135,26 @@ def test_employee_answer_cites_employee_pool_only(api, grounded):
 
 def test_agent_answers_span_both_pools(api, grounded):
     _chunk(
-        api.fake, "leave-policy", "KB-E-01", "Leave Policy", "employee",
-        "1. Carryover", 1, "Five PTO days carry over each quarter.", [0.8, 0.6],
+        api.fake,
+        "leave-policy",
+        "KB-E-01",
+        "Leave Policy",
+        "employee",
+        "1. Carryover",
+        1,
+        "Five PTO days carry over each quarter.",
+        [0.8, 0.6],
     )
     _chunk(
-        api.fake, "payroll-run-sop", "KB-HR-02", "Payroll Run", "hr",
-        "2. Cutoffs", 4, "HR cuts payroll at the 24th.", [0.8, 0.6],
+        api.fake,
+        "payroll-run-sop",
+        "KB-HR-02",
+        "Payroll Run",
+        "hr",
+        "2. Cutoffs",
+        4,
+        "HR cuts payroll at the 24th.",
+        [0.8, 0.6],
     )
     grounded.setattr(
         "app.rag.llm.chat",
@@ -145,8 +169,15 @@ def test_agent_answers_span_both_pools(api, grounded):
 
 def test_model_slip_markers_never_become_citations(api, grounded):
     _chunk(
-        api.fake, "leave-policy", "KB-E-01", "Leave Policy", "employee",
-        "1. Carryover", 1, "Five PTO days carry over each quarter.", [0.8, 0.6],
+        api.fake,
+        "leave-policy",
+        "KB-E-01",
+        "Leave Policy",
+        "employee",
+        "1. Carryover",
+        1,
+        "Five PTO days carry over each quarter.",
+        [0.8, 0.6],
     )
     # the model cites a paragraph retrieval never offered: the marker is not
     # honoured as a citation, but the ANSWER still carries a verified source
@@ -163,12 +194,19 @@ def test_model_slip_markers_never_become_citations(api, grounded):
 
 
 def test_unconfigured_token_answers_without_calling_providers(api, monkeypatch):
-    monkeypatch.setattr("app.rag.settings.HF_TOKEN", "")
+    monkeypatch.setattr("app.rag.settings.GEMINI_API_KEY", "")
     monkeypatch.setattr("app.rag.embeddings.embed_texts", _stub_embed())
     monkeypatch.setattr("app.rag.llm.chat", _stub_llm())
     _chunk(
-        api.fake, "leave-policy", "KB-E-01", "Leave Policy", "employee",
-        "1. x", 1, "doc", [0.9],
+        api.fake,
+        "leave-policy",
+        "KB-E-01",
+        "Leave Policy",
+        "employee",
+        "1. x",
+        1,
+        "doc",
+        [0.9],
     )
     r = _ask(api, U["priya"])
     assert r.status_code == 200
@@ -197,8 +235,15 @@ def test_short_question_and_unknown_viewer_are_rejected(api, grounded):
 
 def test_each_answer_is_audited_once_with_cited_sources(api, grounded):
     _chunk(
-        api.fake, "leave-policy", "KB-E-01", "Leave Policy", "employee",
-        "1. Carryover", 1, "Five PTO days carry over each quarter.", [0.8, 0.6],
+        api.fake,
+        "leave-policy",
+        "KB-E-01",
+        "Leave Policy",
+        "employee",
+        "1. Carryover",
+        1,
+        "Five PTO days carry over each quarter.",
+        [0.8, 0.6],
     )
     grounded.setattr("app.rag.llm.chat", _fake_llm("Five carry over. [KB-E-01 ¶1]"))
 
@@ -217,8 +262,15 @@ def test_each_answer_is_audited_once_with_cited_sources(api, grounded):
 
 def test_second_answer_is_stateless_new_exchange(api, grounded):
     _chunk(
-        api.fake, "leave-policy", "KB-E-01", "Leave Policy", "employee",
-        "1. Carryover", 1, "Five PTO days carry over each quarter.", [0.8, 0.6],
+        api.fake,
+        "leave-policy",
+        "KB-E-01",
+        "Leave Policy",
+        "employee",
+        "1. Carryover",
+        1,
+        "Five PTO days carry over each quarter.",
+        [0.8, 0.6],
     )
     grounded.setattr("app.rag.llm.chat", _fake_llm("Five carry over. [KB-E-01 ¶1]"))
     first = _ask(api, U["priya"], "Question one about PTO?").json()

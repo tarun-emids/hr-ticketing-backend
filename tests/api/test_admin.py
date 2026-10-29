@@ -44,9 +44,7 @@ def agent_id(api):
 
 def test_admin_endpoints_reject_unknown_and_non_admin_actors(api, admin_id):
     # unknown actor (nonexistent uuid)
-    r = api.client.get(
-        "/api/admin/accounts", params={"actorId": str(uuidlib.uuid4())}
-    )
+    r = api.client.get("/api/admin/accounts", params={"actorId": str(uuidlib.uuid4())})
     assert r.status_code == 404
     # valid account, wrong role (the harness employee)
     r = api.client.get("/api/admin/accounts", params={"actorId": U["priya"]})
@@ -99,9 +97,7 @@ def test_create_account_promote_delete_lifecycle(api, admin_id):
     assert r.status_code == 200 and r.json()["role"] == "admin"
 
     # deletion of a clean account works
-    r = api.client.delete(
-        f"/api/admin/accounts/{created['id']}", params={"actorId": admin_id}
-    )
+    r = api.client.delete(f"/api/admin/accounts/{created['id']}", params={"actorId": admin_id})
     assert r.status_code == 200
 
 
@@ -180,9 +176,7 @@ def test_kb_document_upload_lists_edits_and_deletes(api, admin_id):
     assert r.json()["title"].endswith("(2026 update)")
 
     # delete removes both the document (chunks cascade)
-    r = api.client.delete(
-        f"/api/admin/kb/documents/{doc['slug']}", params={"actorId": admin_id}
-    )
+    r = api.client.delete(f"/api/admin/kb/documents/{doc['slug']}", params={"actorId": admin_id})
     assert r.status_code == 200
     rows = api.fake.execute("SELECT count(*) AS n FROM kb_documents", ())
     assert rows[0]["n"] == 5  # back to the 5 harness documents
@@ -223,24 +217,22 @@ def test_bad_window_and_period_answer_422(api, admin_id):
         "/api/admin/analytics/overview", params={"actorId": admin_id, "window": "fortnight"}
     )
     assert r.status_code == 422
-    r = api.client.get(
-        "/api/admin/analytics/agents", params={"actorId": admin_id, "period": "8d"}
-    )
+    r = api.client.get("/api/admin/analytics/agents", params={"actorId": admin_id, "period": "8d"})
     assert r.status_code == 422
 
 
 def test_leaderboard_ranks_by_resolved(api, admin_id):
-    r = api.client.get(
-        "/api/admin/analytics/agents", params={"actorId": admin_id, "period": "30d"}
-    )
+    r = api.client.get("/api/admin/analytics/agents", params={"actorId": admin_id, "period": "30d"})
     assert r.status_code == 200
     table = r.json()
     by_id = {m["agentId"]: m for m in table}
     # Ben closed TKT-103 in the harness; Alicia only picked TKT-102 up
     assert by_id[U["ben"]]["completed"] >= 1
     assert by_id[U["alicia"]]["pending"] >= 1
+    # ranked by the composite score (0-100); completed count as tie-break
     if len(table) > 1:
-        assert table[0]["completed"] >= table[-1]["completed"]
+        assert (table[0]["score"] or 0) >= (table[-1]["score"] or 0)
+        assert all(0 <= m["score"] <= 100 for m in table if m["score"] is not None)
 
 
 def test_agent_drilldown_self_ok_other_forbidden(api, agent_id, admin_id):
@@ -272,18 +264,28 @@ def test_agent_drilldown_self_ok_other_forbidden(api, agent_id, admin_id):
 def test_agent_chunk_rows_feed_the_assistant_gate(api, admin_id):
     """KB admin + RAG stay in one ledger: deleting a document deletes its
     citation paragraphs (FK cascade); the assistant cannot cite a ghost."""
-    doc_id = api.fake.execute(
-        "SELECT id FROM kb_documents WHERE slug = %s", ("leave-policy",)
-    )[0]["id"]
+    doc_id = api.fake.execute("SELECT id FROM kb_documents WHERE slug = %s", ("leave-policy",))[0][
+        "id"
+    ]
     api.fake.execute(
         "INSERT INTO kb_document_chunks (id, document_id, document_slug, ref, title,"
         " audience, section, block_no, body, embedding) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-        (str(uuidlib.uuid4()), doc_id, "leave-policy", "KB-E-01", "Leave Policy",
-         "employee", "1. Scope", 1, "text", json.dumps([0.1, 0.2])),
+        (
+            str(uuidlib.uuid4()),
+            doc_id,
+            "leave-policy",
+            "KB-E-01",
+            "Leave Policy",
+            "employee",
+            "1. Scope",
+            1,
+            "text",
+            json.dumps([0.1, 0.2]),
+        ),
     )
-    r = api.client.delete(
-        "/api/admin/kb/documents/leave-policy", params={"actorId": admin_id}
-    )
+    r = api.client.delete("/api/admin/kb/documents/leave-policy", params={"actorId": admin_id})
     assert r.status_code == 200
-    rows = api.fake.execute("SELECT count(*) AS n FROM kb_document_chunks WHERE document_slug=%s", ("leave-policy",))
+    rows = api.fake.execute(
+        "SELECT count(*) AS n FROM kb_document_chunks WHERE document_slug=%s", ("leave-policy",)
+    )
     assert rows[0]["n"] == 0

@@ -9,6 +9,9 @@ uvicorn[standard]>=0.30            # ASGI server (CLI only — see README §4)
 psycopg[binary,pool]>=3.2          # PostgreSQL driver + ConnectionPool (app/config.py)
 python-dotenv>=1.0                 # .env loading (app/config.py)
 python-multipart>=0.0.9            # attachment file uploads (FastAPI endpoints)
+pypdf>=5.0                         # paragraph extraction for admin KB uploads
+                                   # (app/rag/chunks_from_pdf.py; lazy import —
+                                   # delayed until printed policy PDFs are cut)
 httpx>=0.27  # direct import (app/rag Gemini clients)
 
 # OpenTelemetry: core (api/sdk/exporter) and contrib (instrumentation) release

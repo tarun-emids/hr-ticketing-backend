@@ -30,6 +30,7 @@ from typing import Optional
 
 from fastapi import HTTPException
 
+from app.config import SIGNED_URL_TTL
 from app.models import ticket_out
 from app.observability import flow_event
 from app.repositories.attachment_storage import AttachmentStorageRepository
@@ -211,12 +212,14 @@ class TicketService:
         )
 
         now = self._now()
-        self._tickets.insert_reply({
-            "ticket_id": row["id"],
-            "author_id": author_id,
-            "author_role": role,
-            "body": text.strip(),
-        }, operation="tickets.reply")
+        self._tickets.insert_reply(
+            {
+                "ticket_id": row["id"],
+                "author_id": author_id,
+                "author_role": role,
+                "body": text.strip(),
+            }
+        )
 
         patch: dict = {}
         if role == "agent":
@@ -319,12 +322,14 @@ class TicketService:
 
         now = self._now()
         if assignee_id and not row.get("first_reply_at") and not has_agent_turn:
-            self._tickets.insert_reply({
-                "ticket_id": row["id"],
-                "author_id": assignee_id,
-                "author_role": "agent",
-                "body": AGENT_PICKUP_TEXT,
-            }, operation="tickets.assign")
+            self._tickets.insert_reply(
+                {
+                    "ticket_id": row["id"],
+                    "author_id": assignee_id,
+                    "author_role": "agent",
+                    "body": AGENT_PICKUP_TEXT,
+                }
+            )
             patch: dict = {"assignee_id": assignee_id, "first_reply_at": now}
             if row["status"] == "Open":
                 patch["status"] = "In Progress"

@@ -213,9 +213,9 @@ class SQLitePool:
             ("Marcus Webb", "marcus@acme.com", "employee", U["marcus"]),
             ("Dana Cole", "dana@acme.com", "employee", U["dana"]),
             ("Tomas Nowak", "tomas@acme.com", "employee", U["tomas"]),
-            ("Alicia Gomez", "alicia.hr@acme.com", "agent", U["alicia"]),
-            ("Ben Osei", "ben.hr@acme.com", "agent", U["ben"]),
-            ("Ruth Meyer", "ruth.hr@acme.com", "agent", U["ruth"]),
+            ("Alicia Gomez", "alicia@acme.com", "agent", U["alicia"]),
+            ("Ben Osei", "ben@acme.com", "agent", U["ben"]),
+            ("Ruth Meyer", "ruth@acme.com", "agent", U["ruth"]),
         ]
         for name, email, role, user_id in people:
             self._connection.execute(
@@ -320,16 +320,46 @@ class SQLitePool:
             ),
         )
         for slug, ref, title, category, audience, keywords in [
-            ("leave-policy", "KB-E-01", "Leave Policy", "Leave", "employee",
-             "pto, carryover, vacation"),
-            ("payslip-guide", "KB-E-02", "Payslip Reading Guide", "Payroll", "employee",
-             "payslip, salary, allowance"),
-            ("work-time-policy", "KB-E-03", "Working Time Policy", "Workplace", "employee",
-             "working time, shifts, overtime"),
-            ("exit-offboard-policy", "KB-HR-01", "Exit Process", "Offboarding", "hr",
-             "exit, clearance, fnf"),
-            ("payroll-run-sop", "KB-HR-02", "Payroll Run SOP", "Payroll", "hr",
-             "payroll, cutoff, run"),
+            (
+                "leave-policy",
+                "KB-E-01",
+                "Leave Policy",
+                "Leave",
+                "employee",
+                "pto, carryover, vacation",
+            ),
+            (
+                "payslip-guide",
+                "KB-E-02",
+                "Payslip Reading Guide",
+                "Payroll",
+                "employee",
+                "payslip, salary, allowance",
+            ),
+            (
+                "work-time-policy",
+                "KB-E-03",
+                "Working Time Policy",
+                "Workplace",
+                "employee",
+                "working time, shifts, overtime",
+            ),
+            (
+                "exit-offboard-policy",
+                "KB-HR-01",
+                "Exit Process",
+                "Offboarding",
+                "hr",
+                "exit, clearance, fnf",
+            ),
+            (
+                "payroll-run-sop",
+                "KB-HR-02",
+                "Payroll Run SOP",
+                "Payroll",
+                "hr",
+                "payroll, cutoff, run",
+            ),
         ]:
             now = clock()
             self._connection.execute(
