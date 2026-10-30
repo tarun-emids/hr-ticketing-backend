@@ -68,39 +68,65 @@ class AdminKbDocService:
 
     # -- create ----------------------------------------------------------------------
 
-    def create(self, *, title, category, audience, summary, keywords, version,
-               effective_date, filename, data: bytes) -> dict:
+    def create(
+        self,
+        *,
+        title,
+        category,
+        audience,
+        summary,
+        keywords,
+        version,
+        effective_date,
+        filename,
+        data: bytes,
+    ) -> dict:
         _assert_common(title, category, audience)
         if not data or not data.startswith(b"%PDF"):
             raise HTTPException(status_code=422, detail="A PDF file is required.")
         slug = _slugify(filename or title)
         if self._repo.get_document_meta(slug):
-            raise HTTPException(status_code=409, detail=f"A document with slug '{slug}' already exists.")
+            raise HTTPException(
+                status_code=409, detail=f"A document with slug '{slug}' already exists."
+            )
         prefix = f"KB-{audience.upper()}-"
         refs = [row.get("ref") or "" for row in self._repo.list_documents()]
-        row = self._repo.insert_document({
-            "slug": slug,
-            "ref": f"{prefix}{_total(refs, prefix) + 1:02d}",
-            "title": title.strip(),
-            "category": (category or "General").strip(),
-            "audience": audience,
-            "summary": (summary or "").strip(),
-            "keywords": (keywords or "").strip(),
-            "version": (version or "v1.0").strip(),
-            "effective_date": effective_date or None,
-            "data": data,
-            "content_type": "application/pdf",
-            "file_size": len(data),
-            "page_count": _pdf_pages(data),
-        })
+        row = self._repo.insert_document(
+            {
+                "slug": slug,
+                "ref": f"{prefix}{_total(refs, prefix) + 1:02d}",
+                "title": title.strip(),
+                "category": (category or "General").strip(),
+                "audience": audience,
+                "summary": (summary or "").strip(),
+                "keywords": (keywords or "").strip(),
+                "version": (version or "v1.0").strip(),
+                "effective_date": effective_date or None,
+                "data": data,
+                "content_type": "application/pdf",
+                "file_size": len(data),
+                "page_count": _pdf_pages(data),
+            }
+        )
         self._refresh_chunks(row, data)
         return self._out(self._repo.get_document_meta(slug) or row)
 
     # -- edit ----------------------------------------------------------------------
 
-    def update(self, slug: str, *, title=None, category=None, audience=None,
-               summary=None, keywords=None, version=None, effective_date=None,
-               filename=None, data: Optional[bytes] = None) -> dict:
+    def update(
+        self,
+        slug: str,
+        *,
+        title=None,
+        category=None,
+        audience=None,
+        summary=None,
+        keywords=None,
+        version=None,
+        effective_date=None,
+        filename=None,
+        data: Optional[bytes] = None,
+    ) -> dict:
         row = self._repo.get_document_meta(slug)
         if not row:
             raise HTTPException(status_code=404, detail="Unknown knowledge-base document")
@@ -148,16 +174,18 @@ class AdminKbDocService:
         for page_no, paragraphs in paragraphs_from_pdf(data):
             for paragraph in paragraphs:
                 block_no += 1
-                chunk_dicts.append({
-                    "document_slug": row["slug"],
-                    "ref": row.get("ref") or "",
-                    "title": row.get("title") or "",
-                    "audience": row["audience"],
-                    "section": f"Page {page_no}",
-                    "block_no": block_no,
-                    "body": paragraph,
-                    "embedding_text": f"{row.get('title') or ''} — 'Page {page_no}': {paragraph}",
-                })
+                chunk_dicts.append(
+                    {
+                        "document_slug": row["slug"],
+                        "ref": row.get("ref") or "",
+                        "title": row.get("title") or "",
+                        "audience": row["audience"],
+                        "section": f"Page {page_no}",
+                        "block_no": block_no,
+                        "body": paragraph,
+                        "embedding_text": f"{row.get('title') or ''} — 'Page {page_no}': {paragraph}",
+                    }
+                )
         if not chunk_dicts or not rag_settings.GEMINI_API_KEY:
             # No key (or nothing cut): keep the store consistent by REMOVING
             # any stale paragraphs — never insert chunks without embeddings.
@@ -177,9 +205,7 @@ class AdminKbDocService:
             "category": row.get("category", "General"),
             "audience": row.get("audience"),
             "summary": row.get("summary", ""),
-            "keywords": [
-                k.strip() for k in (row.get("keywords") or "").split(",") if k.strip()
-            ],
+            "keywords": [k.strip() for k in (row.get("keywords") or "").split(",") if k.strip()],
             "version": row.get("version", "v1.0"),
             "effectiveDate": row.get("effective_date"),
             "fileSize": row.get("file_size"),

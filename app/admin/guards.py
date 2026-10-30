@@ -54,7 +54,5 @@ def require_self_or_admin(
     actor = require_account(users, actor_id)
     target = require_account(users, target_id)
     if actor.get("role") != "admin" and actor["id"] != target["id"]:
-        raise HTTPException(
-            status_code=403, detail="You can only view your own performance."
-        )
+        raise HTTPException(status_code=403, detail="You can only view your own performance.")
     return actor, target

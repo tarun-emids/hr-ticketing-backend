@@ -40,15 +40,6 @@ from app.controllers import (
     tickets,
     users,
 )
-from app.rag import controller as assistant
-from app.resilience import breakers_snapshot
-from app.services.notification_service import (
-    SLA_SWEEP_INTERVAL_SECONDS,
-    NotificationService,
-)
-from app.repositories.notification_repository import NotificationRepository
-from app.repositories.ticket_repository import TicketRepository
-from app.repositories.user_repository import UserRepository
 from app.observability import (
     RequestLogMiddleware,
     flow_event,
@@ -56,6 +47,15 @@ from app.observability import (
     record_error_on_current_span,
     setup_logging,
     setup_tracing,
+)
+from app.rag import controller as assistant
+from app.repositories.notification_repository import NotificationRepository
+from app.repositories.ticket_repository import TicketRepository
+from app.repositories.user_repository import UserRepository
+from app.resilience import breakers_snapshot
+from app.services.notification_service import (
+    SLA_SWEEP_INTERVAL_SECONDS,
+    NotificationService,
 )
 
 setup_logging()

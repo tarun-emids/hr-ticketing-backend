@@ -6,6 +6,7 @@ shape); everything content-sensitive — viewer existence, role pools,
 straight from PostgreSQL behind the same gate, so the browser gets an
 always-fresh permission check instead of a long-signed URL.
 """
+
 from fastapi import APIRouter, Depends, Response
 
 from app.deps import get_kb_service

@@ -49,6 +49,7 @@ def safe_download_name(title: Optional[str]) -> str:
     cleaned = _UNSAFE_FILENAME.sub(" ", (title or "document")).strip()
     return f"{cleaned or 'document'}.pdf"
 
+
 # role -> the document pools it may read
 ROLE_POOLS: dict[str, tuple[str, ...]] = {
     "employee": ("employee",),

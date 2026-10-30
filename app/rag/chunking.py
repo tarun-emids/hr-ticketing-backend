@@ -70,9 +70,7 @@ def _chunk(doc: dict, section: str, block_no: int, body: str) -> dict:
         "section": section if section else "introduction",
         "block_no": block_no,
         "body": body,
-        "embedding_text": (
-            f"{doc['title']} — {section_label}: {body}"
-        ),
+        "embedding_text": (f"{doc['title']} — {section_label}: {body}"),
     }
 
 

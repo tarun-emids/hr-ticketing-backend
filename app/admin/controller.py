@@ -93,9 +93,7 @@ def create_account(
 ):
     """Create one account (name/email/role/password) — onboarding without psql."""
     require_admin(users, actorId)
-    return svc.create(
-        name=body.name, email=body.email, role=body.role, password=body.password
-    )
+    return svc.create(name=body.name, email=body.email, role=body.role, password=body.password)
 
 
 @router.patch("/accounts/{account_id}/role")

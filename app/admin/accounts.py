@@ -25,9 +25,7 @@ ROLES = ("employee", "agent", "admin")
 
 def _assert_role(role: str) -> str:
     if role not in ROLES:
-        raise HTTPException(
-            status_code=422, detail=f"role must be one of: {', '.join(ROLES)}"
-        )
+        raise HTTPException(status_code=422, detail=f"role must be one of: {', '.join(ROLES)}")
     return role
 
 
@@ -51,10 +49,10 @@ class AdminAccountService:
         if len(password) < 8:
             raise HTTPException(status_code=422, detail="Password must be at least 8 characters.")
         if self._users.get_by_email_case_insensitive(email):
-            raise HTTPException(status_code=409, detail="An account with that email already exists.")
-        row = self._repo.insert_account(
-            {"name": name.strip(), "email": email, "role": role}
-        )
+            raise HTTPException(
+                status_code=409, detail="An account with that email already exists."
+            )
+        row = self._repo.insert_account({"name": name.strip(), "email": email, "role": role})
         self._users.set_password_hash(row["id"], hash_password(password))
         return user_out(row)
 

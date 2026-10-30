@@ -18,7 +18,6 @@ import uuid as uuidlib
 
 from fastapi import HTTPException
 
-from app.config import SIGNED_URL_TTL
 from app.models import draft_out, ticket_out
 from app.observability import flow_event
 from app.repositories.attachment_storage import AttachmentStorageRepository

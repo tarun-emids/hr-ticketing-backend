@@ -57,13 +57,13 @@ def test_table_blocks_keep_header_and_rows():
     chunks = chunks_from_document(
         doc(
             blocks=[
-                ("table", ["Expense", "Limit"], [[("Monitor", 15000), ("Desk", 5000)]]),
+                ("table", ["Expense", "Limit"], [["Monitor", 15000], ["Desk", 5000]]),
             ]
         )
     )
     assert len(chunks) == 1
     assert "Table: Expense | Limit" in chunks[0]["body"]
-    assert "('Monitor', 15000)" in chunks[0]["body"]
+    assert "Monitor | 15000" in chunks[0]["body"]
     assert "Desk | 5000" in chunks[0]["body"]
 
 

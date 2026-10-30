@@ -28,6 +28,7 @@ def _names(records):
 # A. Authentication
 # ---------------------------------------------------------------------------
 
+
 def _verify_stub(password, encoded):
     return True
 
@@ -69,7 +70,7 @@ def test_login_failure_classification(api, caplog, monkeypatch):
     events = _flow_records(caplog)
     assert _names(events) == ["auth.login.started", "auth.login.failed"]
     failed = events[1]
-    assert failed.http["status"] == 401          # mapped flow failure — safe diagnostic
+    assert failed.http["status"] == 401  # mapped flow failure — safe diagnostic
     assert failed.http["error"] == "HTTPException"
     assert failed.http["request_id"] == "appflow-loginfail1"
     assert "wrong" not in failed.getMessage()
@@ -524,11 +525,20 @@ def test_background_job_events_have_run_id_and_no_request_id(api, caplog):
         UserRepository(api.fake),
         TicketRepository(api.fake),
     )
+    # The harness seeds rows ~90 minutes old (kept fresh for the window-based
+    # analytics tests); a real desk row accumulates age before the sweep
+    # notices it, so age the seeded unassigned Open ticket past its SLA
+    # target (24h for Medium) inside this test only.
+    api.fake.execute(
+        "UPDATE tickets SET created_at ="
+        " strftime('%Y-%m-%dT%H:%M:%f+00:00', 'now', '-2 days'),"
+        " updated_at = created_at WHERE status = 'Open' AND assignee_id IS NULL"
+    )
     with caplog.at_level(logging.INFO, logger="hrdesk.flow"):
         notified = svc.run_sla_sweep()
         deleted = svc.run_retention_cleanup()
 
-    assert notified >= 1  # seeded unassigned Open tickets are hours past their SLA
+    assert notified >= 1  # the aged unassigned Open ticket is past its SLA target
     assert deleted == 0  # fresh rows — nothing past retention cutoffs
     events = _flow_records(caplog)
     names = _names(events)

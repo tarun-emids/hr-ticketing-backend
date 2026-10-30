@@ -126,6 +126,7 @@ class LogIngestRequest(CamelModel):
 
 # Assistant (app/rag) ---------------------------------------------------------
 
+
 class AssistantQuestion(CamelModel):
     """One grounded question to the HR assistant ([REF ¶block] citations
     resolved server-side; the answer never depends on chat history)."""
@@ -135,6 +136,7 @@ class AssistantQuestion(CamelModel):
 
 
 # Admin console (app/admin) ---------------------------------------------------
+
 
 class AccountCreate(CamelModel):
     """New account via the admin console (scrypt-hashed server-side)."""

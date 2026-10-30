@@ -16,14 +16,14 @@ from app.admin.accounts import AdminAccountService
 from app.admin.analytics_service import AdminAnalyticsService
 from app.admin.kb_docs import AdminKbDocService
 from app.admin.repository import AdminRepository
+from app.rag.repository import RagRepository
+from app.rag.service import RagService
 from app.repositories.attachment_storage import AttachmentStorageRepository
 from app.repositories.draft_repository import DraftRepository
 from app.repositories.kb_repository import KbRepository
 from app.repositories.notification_repository import NotificationRepository
 from app.repositories.ticket_repository import TicketRepository
 from app.repositories.user_repository import UserRepository
-from app.rag.repository import RagRepository
-from app.rag.service import RagService
 from app.services.auth_service import AuthService
 from app.services.draft_service import DraftService
 from app.services.kb_service import KbService

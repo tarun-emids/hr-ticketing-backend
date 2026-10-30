@@ -13,9 +13,9 @@ from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
 
 from app.repositories.base import (
+    as_uuid,
     insert_many_rows,
     insert_row,
-    as_uuid,
     rows_of,
     run,
 )

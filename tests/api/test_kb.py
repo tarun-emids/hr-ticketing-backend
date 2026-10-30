@@ -9,6 +9,7 @@ policy documents (tests/conftest.py). The gate rules under test:
     default, attachment-disposition with the suggested filename when
     download=true — and the gate runs on EVERY fetch.
 """
+
 from tests.conftest import U
 
 
@@ -17,6 +18,7 @@ def _get(client, path, **params):
 
 
 # -- catalogue + pools --------------------------------------------------------
+
 
 def test_employee_lists_only_employee_pool(api):
     r = _get(api.client, "/kb", viewerId=U["priya"])
@@ -39,6 +41,7 @@ def test_agent_sees_both_pools(api):
 
 # -- search (weighted scorer lives behind GET /kb?q=) --------------------------
 
+
 def test_search_returns_top_matches_only(api):
     r = _get(api.client, "/kb", viewerId=U["alicia"], q="leave")
     assert r.status_code == 200
@@ -56,13 +59,24 @@ def test_search_cap_actually_limits(api):
 
 # -- doc shape contract --------------------------------------------------------
 
+
 def test_doc_shape_matches_frontend_contract(api):
     r = _get(api.client, "/kb/leave-policy", viewerId=U["priya"])
     assert r.status_code == 200
     doc = r.json()
     assert set(doc.keys()) == {
-        "slug", "ref", "title", "category", "audience", "summary",
-        "keywords", "version", "effectiveDate", "pages", "fileSize", "updatedAt",
+        "slug",
+        "ref",
+        "title",
+        "category",
+        "audience",
+        "summary",
+        "keywords",
+        "version",
+        "effectiveDate",
+        "pages",
+        "fileSize",
+        "updatedAt",
     }
     assert doc["title"] == "Leave Policy"
     assert doc["audience"] == "employee"
@@ -81,6 +95,7 @@ def test_out_of_pool_slug_is_403(api):
 
 # -- viewer resolution ---------------------------------------------------------
 
+
 def test_unknown_viewer_404(api):
     r = _get(api.client, "/kb", viewerId="00000000-0000-0000-0000-000000000abc")
     assert r.status_code == 404
@@ -92,6 +107,7 @@ def test_malformed_viewer_422(api):
 
 
 # -- file streaming ------------------------------------------------------------
+
 
 def test_file_streams_pdf_inline_by_default(api):
     r = _get(api.client, "/kb/leave-policy/file", viewerId=U["priya"])
