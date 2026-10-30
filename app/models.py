@@ -124,6 +124,34 @@ class LogIngestRequest(CamelModel):
     events: list[FrontendLogEvent] = Field(min_length=1, max_length=20)
 
 
+# Assistant (app/rag) ---------------------------------------------------------
+
+class AssistantQuestion(CamelModel):
+    """One grounded question to the HR assistant ([REF ¶block] citations
+    resolved server-side; the answer never depends on chat history)."""
+
+    employee_id: str
+    question: str = Field(min_length=2, max_length=500)
+
+
+# Admin console (app/admin) ---------------------------------------------------
+
+class AccountCreate(CamelModel):
+    """New account via the admin console (scrypt-hashed server-side)."""
+
+    name: str = Field(min_length=2, max_length=120)
+    email: str = Field(min_length=5, max_length=200)
+    role: Literal["employee", "agent", "admin"]
+    password: str = Field(min_length=8, max_length=200)
+
+
+class AccountRoleUpdate(CamelModel):
+    """Role change: promote / demote down the employee <-> agent <-> admin
+    ladder (last-admin + open-tickets guards live in the service)."""
+
+    role: Literal["employee", "agent", "admin"]
+
+
 # ---------------------------------------------------------------------------
 # Serializers (PostgreSQL row -> API/frontend shape)
 # ---------------------------------------------------------------------------

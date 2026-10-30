@@ -84,13 +84,6 @@ def test_agent_reply_notifies_owner_only(api):
 
 
 def test_assignment_notifies_assignee_only_on_change(api):
-    """Domain matrix (README §10): ticket_created fans out to ALL agents at
-    creation time, and assigning an unanswered ticket posts the pickup reply
-    AND adds ticket_assigned for the new assignee — the new assignee therefore
-    holds BOTH rows. Only RE-picking the same agent must stay quiet. (This
-    test used to pass only because the offline fake returned aliased rows,
-    which silently suppressed the assignment delivery; snapshot semantics are
-    now faithful, so the documented matrix is asserted directly.)"""
     ref = create_employee_ticket(api, U["priya"])["id"]
     api.client.patch(f"/api/tickets/{ref}/assignee", json={"assigneeId": U["ben"]})
     assigned = [
@@ -100,7 +93,7 @@ def test_assignment_notifies_assignee_only_on_change(api):
     ]
     assert len(assigned) == 1
 
-    # re-picking the same assignee adds nothing new
+    # re-picking the same assignee stays quiet
     api.client.patch(f"/api/tickets/{ref}/assignee", json={"assigneeId": U["ben"]})
     assert (
         len(

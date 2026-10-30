@@ -1,14 +1,21 @@
-"""Knowledge-base metadata and PostgreSQL-backed PDF records."""
+"""Knowledge base documents (public.kb_documents) in PostgreSQL.
+
+Metadata and the PDF bytes both live in the database: the `data` column keeps
+the rendered PDF (loaded by scripts/seed_knowledge_base.py), and read access
+is served only through the API's streaming endpoint after the visibility gate.
+Repositories stay role-agnostic: callers pass the audience pool(s) the viewer
+may read, which the KbService derives from the viewer's role in `users`.
+"""
 
 from typing import Optional, Sequence
 
 from psycopg_pool import ConnectionPool
 
-from app.repositories.base import first_of, rows_of, run
+from app.repositories.base import first_of, rows_of
 
-_DOCUMENT_COLUMNS = (
-    "slug, ref, title, category, audience, summary, keywords, search_text, "
-    "file_path, file_size, page_count, version, effective_date, updated_at"
+_META_COLUMNS = (
+    "slug, ref, title, category, audience, summary, keywords, "
+    "version, effective_date, file_size, page_count, updated_at"
 )
 
 
@@ -23,60 +30,30 @@ class KbRepository:
         placeholders = ", ".join(["%s"] * len(audiences))
         return rows_of(
             self._database,
-            f"SELECT {_DOCUMENT_COLUMNS} FROM kb_documents "
-            f"WHERE audience IN ({placeholders}) ORDER BY updated_at DESC LIMIT %s",
+            f"SELECT {_META_COLUMNS} FROM kb_documents "
+            f"WHERE audience IN ({placeholders}) "
+            f"ORDER BY updated_at DESC LIMIT %s",
             (*audiences, limit),
             table="kb_documents",
         )
 
     def get_by_slug(self, slug: str) -> Optional[dict]:
+        """Metadata for one document (without the heavy content column)."""
         return first_of(
             self._database,
-            f"SELECT {_DOCUMENT_COLUMNS} FROM kb_documents WHERE slug = %s LIMIT 1",
+            f"SELECT {_META_COLUMNS} FROM kb_documents WHERE slug = %s LIMIT 1",
             (slug,),
             table="kb_documents",
         )
 
-    def has_pdf(self, slug: str) -> bool:
+    def get_content(self, slug: str) -> Optional[bytes]:
+        """PDF bytes for one document — fetched only after the caller's gate."""
         row = first_of(
             self._database,
-            "SELECT file_data IS NOT NULL AS has_pdf FROM kb_documents WHERE slug = %s",
+            "SELECT data FROM kb_documents WHERE slug = %s LIMIT 1",
             (slug,),
             table="kb_documents",
         )
-        return bool(row and row["has_pdf"])
-
-    def upsert_document(self, row: dict) -> None:
-        columns = (
-            "slug",
-            "ref",
-            "title",
-            "category",
-            "audience",
-            "summary",
-            "keywords",
-            "search_text",
-            "file_path",
-            "file_size",
-            "page_count",
-            "version",
-            "effective_date",
-            "file_data",
-        )
-        names = ", ".join(columns)
-        placeholders = ", ".join(["%s"] * len(columns))
-        updates = ", ".join(
-            f"{column} = EXCLUDED.{column}"
-            for column in columns
-            if column not in {"slug", "file_data"}
-        )
-        run(
-            self._database,
-            f"INSERT INTO kb_documents ({names}) VALUES ({placeholders}) "
-            f"ON CONFLICT (slug) DO UPDATE SET {updates}, "
-            "file_data = COALESCE(EXCLUDED.file_data, kb_documents.file_data), "
-            "updated_at = now()",
-            tuple(row.get(column) for column in columns),
-            fetch="none",
-            table="kb_documents",
-        )
+        if not row or row["data"] is None:
+            return None
+        return bytes(row["data"])

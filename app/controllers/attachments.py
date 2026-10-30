@@ -3,11 +3,6 @@
 The file bytes are read here (that is the HTTP-facing concern) — everything
 else — size cap, path, storage I/O, the signed URL — belongs to the layers
 below.
-
-Observability: ``attachment.upload`` / ``attachment.url`` events. Request
-descriptors (ticket ref, size, content type) ride BOTH boundary events;
-completed adds expiry metadata. The signed URL (one-time token inside) and
-the attachment NAME are never logged.
 """
 
 from fastapi import APIRouter, Depends, Request, Response, UploadFile
@@ -29,21 +24,12 @@ def upload_attachment(
 ):
     """POST /tickets/{id}/attachment — multipart upload, <=5 MB."""
     data = file.file.read()
-    with flow_operation(
-        "attachment.upload",
-        operation="tickets.attachment_upload",
-        method="POST",
-        path=f"/api/tickets/{tid}/attachment",
-        ticket_ref=tid,
-        size_bytes=len(data),
+    return svc.upload_attachment(
+        tid,
+        filename=file.filename,
         content_type=file.content_type,
-    ):
-        return svc.upload_attachment(
-            tid,
-            filename=file.filename,
-            content_type=file.content_type,
-            data=data,
-        )
+        data=data,
+    )
 
 
 @router.get("/tickets/{tid}/attachment")

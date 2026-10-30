@@ -30,6 +30,7 @@ from typing import Optional
 
 from fastapi import HTTPException
 
+from app.config import SIGNED_URL_TTL
 from app.models import ticket_out
 from app.observability import flow_event
 from app.repositories.attachment_storage import AttachmentStorageRepository

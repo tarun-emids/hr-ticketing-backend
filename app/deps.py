@@ -12,13 +12,18 @@ from fastapi import Depends
 from psycopg_pool import ConnectionPool
 
 from app import config as app_config
+from app.admin.accounts import AdminAccountService
+from app.admin.analytics_service import AdminAnalyticsService
+from app.admin.kb_docs import AdminKbDocService
+from app.admin.repository import AdminRepository
 from app.repositories.attachment_storage import AttachmentStorageRepository
 from app.repositories.draft_repository import DraftRepository
 from app.repositories.kb_repository import KbRepository
-from app.repositories.kb_storage import KbStorageRepository
 from app.repositories.notification_repository import NotificationRepository
 from app.repositories.ticket_repository import TicketRepository
 from app.repositories.user_repository import UserRepository
+from app.rag.repository import RagRepository
+from app.rag.service import RagService
 from app.services.auth_service import AuthService
 from app.services.draft_service import DraftService
 from app.services.kb_service import KbService
@@ -62,10 +67,6 @@ def get_storage_repo(
 
 def get_kb_repo(database: ConnectionPool = Depends(get_database)) -> KbRepository:
     return KbRepository(database)
-
-
-def get_kb_storage(database: ConnectionPool = Depends(get_database)) -> KbStorageRepository:
-    return KbStorageRepository(database)
 
 
 # -- services ---------------------------------------------------------------
@@ -114,6 +115,46 @@ def get_log_ingest_service() -> LogIngestService:
 def get_kb_service(
     kb: KbRepository = Depends(get_kb_repo),
     users: UserRepository = Depends(get_user_repo),
-    pdfs: KbStorageRepository = Depends(get_kb_storage),
 ) -> KbService:
-    return KbService(kb, users, pdfs)
+    return KbService(kb, users)
+
+
+# -- HR assistant (app/rag) ---------------------------------------------------
+
+
+def get_rag_repo(database=Depends(get_database)) -> RagRepository:
+    return RagRepository(database)
+
+
+def get_rag_service(
+    rag: RagRepository = Depends(get_rag_repo),
+    users: UserRepository = Depends(get_user_repo),
+) -> RagService:
+    return RagService(rag, users)
+
+
+# -- Admin console (app/admin) --------------------------------------------------
+
+
+def get_admin_repo(database=Depends(get_database)) -> AdminRepository:
+    return AdminRepository(database)
+
+
+def get_admin_account_service(
+    repo: AdminRepository = Depends(get_admin_repo),
+    users: UserRepository = Depends(get_user_repo),
+) -> AdminAccountService:
+    return AdminAccountService(repo, users)
+
+
+def get_admin_kb_service(
+    repo: AdminRepository = Depends(get_admin_repo),
+) -> AdminKbDocService:
+    return AdminKbDocService(repo)
+
+
+def get_admin_analytics_service(
+    repo: AdminRepository = Depends(get_admin_repo),
+    users: UserRepository = Depends(get_user_repo),
+) -> AdminAnalyticsService:
+    return AdminAnalyticsService(repo, users)

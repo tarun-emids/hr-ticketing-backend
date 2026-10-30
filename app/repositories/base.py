@@ -1,18 +1,42 @@
 """Shared, parameterized PostgreSQL execution for repositories."""
 
+import json
 import re
 import uuid
-from datetime import datetime
+from datetime import date, datetime
+from decimal import Decimal
 from typing import Any
 
 import psycopg
 from fastapi import HTTPException
-from psycopg.types.json import Jsonb
+from psycopg.types.json import Jsonb, set_json_dumps
 from psycopg_pool import ConnectionPool, PoolTimeout
 
 from app.observability import db_span
 from app.resilience import CircuitOpenError, db_breaker
 from app.retries import classify_mode, retry_call
+
+
+def _to_jsonable(obj: Any) -> Any:
+    """JSON writer default for psycopg's Jsonb adapter.
+
+    Row payloads legitimately carry values Python's default JSON encoder
+    rejects — most notably psycopg's own UUID objects inside notification
+    payloads (a TypeError there only surfaces as a swallowed
+    'notification emit failed'). Datetimes and Decimals stay ISO/float;
+    anything else still fails fast like before."""
+    if isinstance(obj, uuid.UUID):
+        return str(obj)
+    if isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+    if isinstance(obj, Decimal):
+        return float(obj)
+    raise TypeError(f"Object of type {obj.__class__.__name__} is not JSON serializable")
+
+
+# Install once per process: every Jsonb write (notifications payloads, draft
+# snapshots, ...) accepts the types above via json.dumps(default=...).
+set_json_dumps(lambda value: json.dumps(value, default=_to_jsonable))
 
 UUID_RE = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"

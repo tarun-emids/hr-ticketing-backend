@@ -1,10 +1,25 @@
-fastapi>=0.111
-uvicorn[standard]>=0.30
-psycopg[binary,pool]>=3.2
-python-dotenv>=1.0
-python-multipart>=0.0.9
+# Runtime dependencies only — dev tools (pytest, ruff, pre-commit, reportlab)
+# are NOT listed here (project convention; install them ad hoc in the venv).
+# Fresh-environment install (avoids resolver fights with stale global packages):
+#   python -m venv .venv && .venv\Scripts\activate     # Windows
+#   python -m pip install --upgrade pip
+#   pip install -r requirements.txt
+fastapi>=0.111                     # web framework (pulls pydantic, app/models.py)
+uvicorn[standard]>=0.30            # ASGI server (CLI only — see README §4)
+psycopg[binary,pool]>=3.2          # PostgreSQL driver + ConnectionPool (app/config.py)
+python-dotenv>=1.0                 # .env loading (app/config.py)
+python-multipart>=0.0.9            # attachment file uploads (FastAPI endpoints)
+pypdf>=5.0                         # paragraph extraction for admin KB uploads
+                                   # (app/rag/chunks_from_pdf.py; lazy import —
+                                   # delayed until printed policy PDFs are cut)
+httpx>=0.27  # direct import (app/rag Gemini clients)
+
+# OpenTelemetry: core (api/sdk/exporter) and contrib (instrumentation) release
+# in LOCKSTEP — core 1.28.x pairs with contrib 0.49b0, and every later release
+# pairs the same way. Keep these four on >= floors only so pip always selects
+# one consistent core+contrib set; pinning core and contrib to mixed floors/
+# caps is exactly what produces "ResolutionImpossible" errors.
 opentelemetry-api>=1.28
 opentelemetry-sdk>=1.28
 opentelemetry-exporter-otlp-proto-http>=1.28
 opentelemetry-instrumentation-fastapi>=0.49b0
-ruff>=0.17.0
