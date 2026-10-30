@@ -1,7 +1,9 @@
 # Formatter + linter config (single source of truth): ruff format + ruff check.
 # Operating rules live in CLAUDE.md > "Formatting & linting".
 # Requires a current ruff (2025 releases and later, for target py314):
-#   .venv/Scripts/python.exe -m pip install ruff   <- dev tool, NOT in requirements.txt
+#   .venv/Scripts/python.exe -m pip install ruff   <- dev tool, NOT in requirements.txt.
+# Never pin ruff>=0.17 — that version does not exist on PyPI; current line is
+# 0.14.x (hook rev v0.14.5).
 [tool.ruff]
 line-length = 100
 target-version = "py314"        # this repo only imports under 3.14 (lazy class-body annotations)

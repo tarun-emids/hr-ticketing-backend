@@ -1,3 +1,0 @@
-# Seed tooling only — the API itself never imports these.
-# Used by scripts/seed_knowledge_base.py to (re)render the policy PDFs.
-reportlab>=4.0

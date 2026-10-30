@@ -2,8 +2,9 @@
 started/completed/failed trio under ``hrdesk.flow`` with the shared request
 id, safe error classification, and never any HR-sensitive content.
 
-Offline everywhere: the shared SQLite pool and in-memory file records are used;
-no external database or storage service is contacted.
+Offline everywhere: SQLite-backed double (shared conftest), password
+verification monkeypatched
+at the module boundary (no network, no tokens), storage handled by FakeStorage.
 """
 
 import logging
@@ -28,13 +29,14 @@ def _names(records):
 # ---------------------------------------------------------------------------
 
 
-def test_login_success_emits_operation_events(api, caplog):
-    from app.services.passwords import hash_password
+def _verify_stub(password, encoded):
+    return True
 
-    api.fake.execute(
-        "UPDATE users SET password_hash = ? WHERE id = ?",
-        (hash_password("valid-test-password"), U["priya"]),
-    )
+
+def test_login_success_emits_operation_events(api, caplog, monkeypatch):
+    from app.services import auth_service
+
+    monkeypatch.setattr(auth_service, "verify_password", _verify_stub)
     with caplog.at_level(logging.INFO, logger="hrdesk.flow"):
         res = api.client.post(
             "/api/auth/login",
@@ -51,7 +53,13 @@ def test_login_success_emits_operation_events(api, caplog):
     assert events[-1].http["user_id"] == U["priya"]  # verified account's UUID
 
 
-def test_login_failure_classification(api, caplog):
+def test_login_failure_classification(api, caplog, monkeypatch):
+    from app.services import auth_service
+
+    def bad_hash(password, encoded_hash):
+        return False  # wrong credentials -> 401 from AuthService
+
+    monkeypatch.setattr(auth_service, "verify_password", bad_hash)
     with caplog.at_level(logging.INFO, logger="hrdesk.flow"):
         res = api.client.post(
             "/api/auth/login",
@@ -62,7 +70,7 @@ def test_login_failure_classification(api, caplog):
     events = _flow_records(caplog)
     assert _names(events) == ["auth.login.started", "auth.login.failed"]
     failed = events[1]
-    assert failed.http["status"] == 401
+    assert failed.http["status"] == 401  # mapped flow failure — safe diagnostic
     assert failed.http["error"] == "HTTPException"
     assert failed.http["request_id"] == "appflow-loginfail1"
     assert "wrong" not in failed.getMessage()
@@ -517,11 +525,20 @@ def test_background_job_events_have_run_id_and_no_request_id(api, caplog):
         UserRepository(api.fake),
         TicketRepository(api.fake),
     )
+    # The harness seeds rows ~90 minutes old (kept fresh for the window-based
+    # analytics tests); a real desk row accumulates age before the sweep
+    # notices it, so age the seeded unassigned Open ticket past its SLA
+    # target (24h for Medium) inside this test only.
+    api.fake.execute(
+        "UPDATE tickets SET created_at ="
+        " strftime('%Y-%m-%dT%H:%M:%f+00:00', 'now', '-2 days'),"
+        " updated_at = created_at WHERE status = 'Open' AND assignee_id IS NULL"
+    )
     with caplog.at_level(logging.INFO, logger="hrdesk.flow"):
         notified = svc.run_sla_sweep()
         deleted = svc.run_retention_cleanup()
 
-    assert notified >= 1  # seeded unassigned Open tickets are hours past their SLA
+    assert notified >= 1  # the aged unassigned Open ticket is past its SLA target
     assert deleted == 0  # fresh rows — nothing past retention cutoffs
     events = _flow_records(caplog)
     names = _names(events)

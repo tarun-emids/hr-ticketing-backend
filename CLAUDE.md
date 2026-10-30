@@ -23,7 +23,8 @@ and walkthroughs — this file is operating instructions for working here.
 .venv/Scripts/python.exe -m uvicorn app.main:app --reload --port 8000
 ```
 
-`pytest` is **not** in requirements.txt; install it separately in the venv.
+`pytest` is **not** in requirements.txt; install it separately in the venv
+(dev tools — pytest, ruff, pre-commit, reportlab — are ad-hoc installs only).
 
 ## Formatting & linting (ruff — enforced by PostToolUse hook)
 

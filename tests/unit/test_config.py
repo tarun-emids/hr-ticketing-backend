@@ -112,4 +112,4 @@ def test_missing_database_url_raises_runtime_error(monkeypatch):
     module._database = None
     with pytest.raises(RuntimeError, match="Missing DATABASE_URL"):
         module.get_database()
-    importlib.reload(cfg)
+    importlib.reload(cfg)  # restore real config state for other tests
