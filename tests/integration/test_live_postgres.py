@@ -190,3 +190,56 @@ def test_live_update_priority_category(live, cleanup):
     assert r.json()["priority"] == "Urgent"
     r = live["client"].patch(f"/api/tickets/{ref}/category", json={"category": "Policy"})
     assert r.json()["category"] == "Policy"
+
+
+def test_live_feedback_roundtrip(live, cleanup):
+    ref = create_ticket(live)
+    agent = live["agents"][0]["id"]
+    employee = live["employees"][0]["id"]
+
+    # Guard on the wrong state first: the ticket is Open.
+    r = live["client"].post(
+        f"/api/tickets/{ref}/feedback",
+        json={"userId": employee, "rating": 3, "comment": "too soon"},
+    )
+    assert r.status_code == 409
+
+    r = live["client"].patch(
+        f"/api/tickets/{ref}/status", json={"status": "Closed", "actorId": agent}
+    )
+    assert r.status_code == 200 and r.json()["closedBy"] == agent
+
+    r = live["client"].post(
+        f"/api/tickets/{ref}/feedback",
+        json={"userId": employee, "rating": 4, "comment": "live postgres round trip"},
+    )
+    assert r.status_code == 201
+    assert r.json()["ticketId"] == ref
+    assert r.json()["rating"] == 4
+
+    # Replace path: resubmission updates the single row, through real psycopg.
+    r = live["client"].post(
+        f"/api/tickets/{ref}/feedback",
+        json={"userId": employee, "rating": 5, "comment": "resolved properly"},
+    )
+    assert r.status_code == 200 and r.json()["rating"] == 5
+
+    r = live["client"].post(
+        f"/api/tickets/{ref}/feedback",
+        json={"userId": live["employees"][1]["id"], "rating": 1},
+    )
+    assert r.status_code == 403
+
+    r = live["client"].get(
+        f"/api/tickets/{ref}/feedback", params={"userId": live["agents"][1]["id"]}
+    )
+    assert r.status_code == 200 and r.json()["rating"] == 5
+
+    # The database says exactly one row exists, with the replaced rating.
+    from app.config import get_database
+    from app.repositories.feedback_repository import FeedbackRepository
+
+    ticket_uuid = live["client"].get(f"/api/tickets/{ref}").json()["uuid"]
+    row = FeedbackRepository(get_database()).get_for_ticket(ticket_uuid)
+    assert row["rating"] == 5
+    assert row["comment"] == "resolved properly"

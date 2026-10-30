@@ -14,6 +14,9 @@ from fastapi.testclient import TestClient
 from psycopg import OperationalError
 from psycopg.types.json import Jsonb
 
+import psycopg
+from psycopg import errors as psycopg_errors
+
 os.environ.setdefault("TRACE_ENABLED", "false")
 os.environ.setdefault("LOG_TO_FILE", "false")
 os.environ.setdefault("ATTACHMENT_SIGNING_KEY", "test-only-signing-key-at-least-32-bytes")
@@ -74,7 +77,10 @@ class _Connection:
         sql = sql.replace(" ILIKE ", " LIKE ")
         sql = sql.replace("TRUE", "1").replace("FALSE", "0")
         params = tuple(str(value) if isinstance(value, uuidlib.UUID) else value for value in params)
-        cursor = self._pool._connection.execute(sql, params)
+        try:
+            cursor = self._pool._connection.execute(sql, params)
+        except sqlite3.IntegrityError as exc:
+            raise psycopg_errors.UniqueViolation(str(exc)) from exc
         return _Cursor(cursor)
 
 
@@ -176,6 +182,19 @@ class SQLitePool:
                 UPDATE ticket_drafts SET updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00', 'now')
                 WHERE id = NEW.id;
               END;
+            CREATE TABLE feedback (
+              id TEXT PRIMARY KEY, ticket_id TEXT NOT NULL UNIQUE REFERENCES tickets(id) ON DELETE CASCADE,
+              employee_id TEXT NOT NULL REFERENCES users(id),
+              rating INTEGER NOT NULL CHECK (rating BETWEEN 1 AND 5),
+              comment TEXT NOT NULL DEFAULT '' CHECK (length(comment) <= 2000),
+              created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+00:00', 'now')),
+              updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+00:00', 'now'))
+              );
+            CREATE TRIGGER feedback_updated AFTER UPDATE ON feedback
+              WHEN NEW.updated_at = OLD.updated_at BEGIN
+                UPDATE feedback SET updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00', 'now')
+                WHERE id = NEW.id;
+              END;        
             """
         )
         self._connection.execute("INSERT INTO sqlite_sequence (name, seq) VALUES ('tickets', 100)")

@@ -19,6 +19,7 @@ from app.repositories.kb_storage import KbStorageRepository
 from app.repositories.notification_repository import NotificationRepository
 from app.repositories.ticket_repository import TicketRepository
 from app.repositories.user_repository import UserRepository
+from app.repositories.feedback_repository import FeedbackRepository
 from app.services.auth_service import AuthService
 from app.services.draft_service import DraftService
 from app.services.kb_service import KbService
@@ -26,6 +27,7 @@ from app.services.log_ingest_service import LogIngestService
 from app.services.notification_service import NotificationService
 from app.services.ticket_service import TicketService
 from app.services.user_service import UserService
+from app.services.feedback_service import FeedbackService
 
 
 def get_database():
@@ -66,6 +68,10 @@ def get_kb_repo(database: ConnectionPool = Depends(get_database)) -> KbRepositor
 
 def get_kb_storage(database: ConnectionPool = Depends(get_database)) -> KbStorageRepository:
     return KbStorageRepository(database)
+
+
+def get_feedback_repo(database: ConnectionPool = Depends(get_database)) -> FeedbackRepository:
+    return FeedbackRepository(database)
 
 
 # -- services ---------------------------------------------------------------
@@ -117,3 +123,11 @@ def get_kb_service(
     pdfs: KbStorageRepository = Depends(get_kb_storage),
 ) -> KbService:
     return KbService(kb, users, pdfs)
+
+
+def get_feedback_service(
+        feedbacks: FeedbackRepository = Depends(get_feedback_repo),
+        tickets: TicketRepository = Depends(get_ticket_repo),
+        users: UserRepository = Depends(get_user_repo),
+) -> FeedbackService:
+    return FeedbackService(feedbacks, tickets, users)

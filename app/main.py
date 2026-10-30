@@ -38,6 +38,7 @@ from app.controllers import (
     notifications,
     tickets,
     users,
+    feedback
 )
 from app.observability import (
     RequestLogMiddleware,
@@ -133,6 +134,7 @@ app.include_router(users.router, prefix="/api")
 app.include_router(logs.router, prefix="/api")
 # knowledge base (policy library: search, metadata, signed PDF URLs)
 app.include_router(knowledge_base.router, prefix="/api")
+app.include_router(feedback.router, prefix="/api")
 
 
 @app.get("/")
