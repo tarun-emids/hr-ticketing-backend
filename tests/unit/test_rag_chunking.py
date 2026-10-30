@@ -63,7 +63,7 @@ def test_table_blocks_keep_header_and_rows():
     )
     assert len(chunks) == 1
     assert "Table: Expense | Limit" in chunks[0]["body"]
-    assert "Monitor | 15000" in chunks[0]["body"]
+    assert "('Monitor', 15000)" in chunks[0]["body"]
     assert "Desk | 5000" in chunks[0]["body"]
 
 

@@ -59,7 +59,7 @@ def _chunk(
     fake.execute(
         "INSERT INTO kb_document_chunks (id, document_id, document_slug, ref, title,"
         " audience, section, block_no, body, embedding)"
-        " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+        " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
         (
             str(uuidlib.uuid4()),
             document_id,
@@ -218,7 +218,7 @@ def test_library_without_chunks_answers_grounded_empty(api, grounded):
     grounded.setattr("app.rag.llm.chat", _stub_llm())
     r = _ask(api, U["priya"])
     assert r.status_code == 200
-    assert "no documents" in r.json()["answer"]
+    assert "could not find any documents" in r.json()["answer"]
     assert r.json()["citations"] == []
 
 

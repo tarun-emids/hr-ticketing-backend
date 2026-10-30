@@ -22,7 +22,9 @@ sqlite3.register_adapter(Jsonb, lambda value: json.dumps(value.obj))
 sqlite3.register_adapter(datetime, lambda value: value.isoformat())
 sqlite3.register_converter("JSON", json.loads)
 
-_ORIGIN = datetime(2026, 1, 1, 9, 0, 0, tzinfo=timezone.utc)
+_ORIGIN = datetime.now(timezone.utc) - timedelta(minutes=90)
+"""Seeding anchor relative to "now": harness rows always land inside every
+analytics window (24h/7d/30d), while +seconds interleave stays deterministic."""
 
 
 def _uuid(n: int) -> str:

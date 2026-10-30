@@ -52,7 +52,7 @@ def test_admin_endpoints_reject_unknown_and_non_admin_actors(api, admin_id):
     r = api.client.post(
         "/api/admin/accounts",
         params={"actorId": U["priya"]},
-        json={"name": "X", "email": "x@y.com", "role": "agent", "password": "12345678"},
+        json={"name": "Xavier", "email": "x@y.com", "role": "agent", "password": "12345678"},
     )
     assert r.status_code == 403
 
@@ -158,7 +158,7 @@ def test_kb_document_upload_lists_edits_and_deletes(api, admin_id):
     assert r.status_code == 201
     doc = r.json()
     assert doc["slug"] == "new-leave-policy"
-    assert doc["ref"].startswith("KB-E-")  # employee audience pool
+    assert doc["ref"].startswith("KB-EMPLOYEE-")  # employee audience pool
     assert doc["fileSize"] == len(b"%PDF-1.4 uploaded-bytes")
 
     r = api.client.get("/api/admin/kb/documents", params={"actorId": admin_id})

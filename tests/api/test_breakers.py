@@ -29,7 +29,7 @@ def test_database_breaker_fails_fast_and_updates_health(api):
     assert opened.json()["detail"] == "Database is temporarily unavailable — try again shortly."
 
     breakers = api.client.get("/health/deps").json()["breakers"]
-    assert set(breakers) == {"db"}
+    assert set(breakers) == {"assistant", "db"}
     assert breakers["db"]["state"] == OPEN
     assert breakers["db"]["failures"] == THRESHOLD
     assert breakers["db"]["secondsUntilProbe"] > 0
