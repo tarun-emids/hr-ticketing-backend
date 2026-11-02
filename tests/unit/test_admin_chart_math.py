@@ -35,6 +35,8 @@ def row(
 ):
     """One fabricated ticket row small enough to reason about by eye."""
     created = (NOW - timedelta(days=days_ago)).replace(hour=hour, minute=0, second=0, microsecond=0)
+    if created > NOW:
+        created -= timedelta(days=1)
     return {
         "id": "00000000-0000-0000-0000-000000000000",
         "employee_id": "e0000000-0000-0000-0000-000000000000",

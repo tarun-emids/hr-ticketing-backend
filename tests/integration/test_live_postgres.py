@@ -75,7 +75,11 @@ def test_live_golden_flow_reply_resolve_close_reopen(live, cleanup):
 def test_live_assign_pickup_reply(live, cleanup):
     ref = create_ticket(live)
     agent = live["agents"][1]["id"]
-    r = live["client"].patch(f"/api/tickets/{ref}/assignee", json={"assigneeId": agent})
+    r = live["client"].patch(
+        f"/api/tickets/{ref}/assignee",
+        params={"viewerId": live["agents"][1]["id"]},
+        json={"assigneeId": agent},
+    )
     t = r.json()
     assert t["assigneeId"] == agent
     assert t["status"] == "In Progress"
@@ -162,6 +166,7 @@ def test_live_attachment_roundtrip(live, cleanup):
 
     r = live["client"].post(
         f"/api/tickets/{ref}/attachment",
+        params={"viewerId": live["agents"][0]["id"]},
         files={"file": ("live-test.txt", b"integration attachment payload", "text/plain")},
     )
     assert r.status_code == 200, r.text
@@ -172,7 +177,9 @@ def test_live_attachment_roundtrip(live, cleanup):
     assert t["attachment"]["name"] == "live-test.txt"
     assert t["attachment"]["size"] == len(b"integration attachment payload")
 
-    r = live["client"].get(f"/api/tickets/{ref}/attachment")
+    r = live["client"].get(
+        f"/api/tickets/{ref}/attachment", params={"viewerId": live["agents"][0]["id"]}
+    )
     assert r.status_code == 200
     body = r.json()
     assert body["name"] == "live-test.txt"
@@ -180,15 +187,25 @@ def test_live_attachment_roundtrip(live, cleanup):
 
 
 def test_live_attachment_on_missing_ticket_404(live):
-    r = live["client"].get("/api/tickets/99999/attachment")
+    r = live["client"].get(
+        "/api/tickets/99999/attachment", params={"viewerId": live["agents"][0]["id"]}
+    )
     assert r.status_code == 404
 
 
 def test_live_update_priority_category(live, cleanup):
     ref = create_ticket(live)
-    r = live["client"].patch(f"/api/tickets/{ref}/priority", json={"priority": "Urgent"})
+    r = live["client"].patch(
+        f"/api/tickets/{ref}/priority",
+        params={"viewerId": live["agents"][0]["id"]},
+        json={"priority": "Urgent"},
+    )
     assert r.json()["priority"] == "Urgent"
-    r = live["client"].patch(f"/api/tickets/{ref}/category", json={"category": "Policy"})
+    r = live["client"].patch(
+        f"/api/tickets/{ref}/category",
+        params={"viewerId": live["agents"][0]["id"]},
+        json={"category": "Policy"},
+    )
     assert r.json()["category"] == "Policy"
 
 

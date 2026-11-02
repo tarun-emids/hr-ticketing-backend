@@ -12,10 +12,8 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 from psycopg import OperationalError
-from psycopg.types.json import Jsonb
-
-import psycopg
 from psycopg import errors as psycopg_errors
+from psycopg.types.json import Jsonb
 
 os.environ.setdefault("TRACE_ENABLED", "false")
 os.environ.setdefault("LOG_TO_FILE", "false")
@@ -215,7 +213,7 @@ class SQLitePool:
               WHEN NEW.updated_at = OLD.updated_at BEGIN
                 UPDATE feedback SET updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00', 'now')
                 WHERE id = NEW.id;
-              END;        
+              END;
             """
         )
         self._connection.execute("INSERT INTO sqlite_sequence (name, seq) VALUES ('tickets', 100)")

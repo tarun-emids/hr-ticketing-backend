@@ -27,12 +27,12 @@ def read(api, tid, user):
 
 
 def test_first_submission_round_trips(api):
-    close_ticket(api, 'TKT-101', U["alicia"])
-    r = submit(api, 'TKT-101', U['priya'], rating=4, comment="Handled fast.")
+    close_ticket(api, "TKT-101", U["alicia"])
+    r = submit(api, "TKT-101", U["priya"], rating=4, comment="Handled fast.")
     assert r.status_code == 201
     body = r.json()
     assert body["ticketId"] == "TKT-101"
-    assert body["employeeId"] == U['priya']
+    assert body["employeeId"] == U["priya"]
     assert body["rating"] == 4
     assert body["comment"] == "Handled fast."
 
@@ -151,7 +151,9 @@ def test_get_missing_user_id_422(api):
 def test_database_uniqueness_prevents_duplicates(api):
     close_ticket(api, "TKT-101", U["alicia"])
     repo = FeedbackRepository(api.fake)
-    ticket_uuid = api.client.get("/api/tickets/TKT-101").json()["uuid"]
+    ticket_uuid = api.client.get("/api/tickets/TKT-101", params={"viewerId": U["alicia"]}).json()[
+        "uuid"
+    ]
     row = {"ticket_id": ticket_uuid, "employee_id": U["priya"], "rating": 4, "comment": "a"}
     repo.insert_feedback(row)
     with pytest.raises(HTTPException) as err:

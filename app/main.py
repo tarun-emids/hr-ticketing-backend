@@ -34,12 +34,12 @@ from app.controllers import (
     attachments,
     auth,
     drafts,
+    feedback,
     knowledge_base,
     logs,
     notifications,
     tickets,
     users,
-    feedback
 )
 from app.observability import (
     RequestLogMiddleware,

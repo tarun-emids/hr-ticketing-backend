@@ -44,7 +44,7 @@ def test_auth_and_attachment_share_the_database_breaker(api):
             json={"email": "priya@acme.com", "password": "not-a-valid-password"},
         )
         assert response.status_code == 502
-    response = api.client.get("/api/tickets/TKT-101/attachment")
+    response = api.client.get("/api/tickets/TKT-101/attachment", params={"viewerId": U["alicia"]})
     assert response.status_code == 503
     assert response.json()["detail"] == "Database is temporarily unavailable — try again shortly."
     assert api.client.get("/health/deps").json()["breakers"]["db"]["state"] == OPEN

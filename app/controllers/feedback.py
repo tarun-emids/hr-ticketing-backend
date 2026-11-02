@@ -9,6 +9,7 @@ from app.services.feedback_service import FeedbackService
 
 router = APIRouter(tags=["feedback"])
 
+
 @router.post("/tickets/{tid}/feedback")
 def submit_feedback(
     tid: str,
@@ -33,7 +34,6 @@ def submit_feedback(
         op["ticket_ref"] = result.get("ticketId")
         response.status_code = 201 if created else 200
         return result
-
 
 
 @router.get("/tickets/{tid}/feedback")

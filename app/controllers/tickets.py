@@ -16,7 +16,7 @@ priorities and UUIDs only.
 
 from typing import Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
 from app.deps import get_ticket_service
 from app.models import (
@@ -63,8 +63,13 @@ def _ref_of(result):
     return (result or {}).get("ref") or (result or {}).get("id")
 
 
+TICKET_PAGE_SIZE_DEFAULT = 25
+TICKET_PAGE_SIZE_MAX = 100
+
+
 @router.get("/tickets")
 def list_tickets(
+    viewerId: Optional[str] = None,
     status: Optional[str] = None,
     category: Optional[str] = None,
     priority: Optional[str] = None,
@@ -72,17 +77,30 @@ def list_tickets(
     assigneeId: Optional[str] = None,
     q: Optional[str] = None,
     unassigned: bool = False,
-    limit: int = 200,
+    page: int = 1,
+    pageSize: int = TICKET_PAGE_SIZE_DEFAULT,
+    sort: str = "updated",
+    order: str = "desc",
     svc: TicketService = Depends(get_ticket_service),
 ):
-    """GET /tickets — newest-first by updatedAt (list items carry empty turns;
-    load a single ticket for the full thread)."""
-    # ``q`` is free text — only its PRESENCE is logged, never the value.
+    """GET /tickets — the paginated envelope is the single contract:
+    {items, page, pageSize, total, hasNext}. page >= 1; pageSize 1..100
+    (default 25); sort in updated|created|priority|subject; order asc|desc.
+    Row visibility is always scoped to the server-resolved viewer."""
+    viewer = svc.require_viewer(viewerId)
+    if page < 1:
+        raise HTTPException(status_code=422, detail="page must be >= 1")
+    if pageSize < 1 or pageSize > TICKET_PAGE_SIZE_MAX:
+        raise HTTPException(
+            status_code=422,
+            detail=f"pageSize must be between 1 and {TICKET_PAGE_SIZE_MAX}",
+        )
     with flow_operation(
         "tickets.list",
         operation="tickets.list",
         method="GET",
         path="/api/tickets",
+        viewer_id=viewer["id"],
         status=status,
         category=category,
         priority=priority,
@@ -90,9 +108,17 @@ def list_tickets(
         assignee_id=assigneeId,
         search=bool(q),
         unassigned=unassigned,
-        limit=limit,
+        page=page,
+        pageSize=pageSize,
+        sort=sort,
+        order=order,
     ) as op:
-        result = svc.list(
+        result = svc.list_paged(
+            viewer=viewer,
+            page=page,
+            page_size=pageSize,
+            sort=sort,
+            order=order,
             status=status,
             category=category,
             priority=priority,
@@ -100,22 +126,29 @@ def list_tickets(
             assignee_id=assigneeId,
             q=q,
             unassigned=unassigned,
-            limit=limit,
         )
-        op["count"] = len(result)
+
+        op["count"] = len(result["items"])
         return result
 
 
 @router.get("/tickets/{tid}")
-def get_ticket(tid: str, svc: TicketService = Depends(get_ticket_service)):
-    """GET /tickets/{TKT-123 | uuid} — full ticket incl. thread."""
+def get_ticket(
+    tid: str, viewerId: Optional[str] = None, svc: TicketService = Depends(get_ticket_service)
+):
+    """GET /tickets/{TKT-123 | uuid} — full ticket incl. thread. Gated:
+    viewerId resolves server-side, and out-of-scope tickets answer 403."""
+    # Guard BEFORE the flow block, exactly like list_tickets: an invalid or
+    # unknown viewer is not a read operation and never emits flow events.
+    viewer = svc.require_viewer(viewerId)
     with flow_operation(
         "tickets.get",
         operation="tickets.get",
         method="GET",
         path=f"/api/tickets/{tid}",
+        viewer_id=viewer["id"],
     ) as op:
-        result = svc.get(tid)
+        result = svc.get(tid, viewer=viewer)
         op["ticket_ref"] = result.get("id")
         op["turns"] = len(result.get("turns") or [])
         return result
@@ -156,13 +189,23 @@ def update_status(
 
 @router.patch("/tickets/{tid}/assignee")
 def assign_ticket(
-    tid: str, payload: AssigneeUpdate, svc: TicketService = Depends(get_ticket_service)
+    tid: str,
+    payload: AssigneeUpdate,
+    viewerId: Optional[str] = None,
+    svc: TicketService = Depends(get_ticket_service),
 ):
+    """PATCH /tickets/{id}/assignee — staff-only (HR agent or admin).
+    Acting identity resolves server-side from viewerId."""
+    # Both guards BEFORE the flow block: invalid identity is not an assign
+    # operation; a restricted role never even tests ticket existence.
+    viewer = svc.require_viewer(viewerId)
+    svc.require_staff(viewer)
     with flow_operation(
         "tickets.assign",
         operation="tickets.assign",
         method="PATCH",
         path=f"/api/tickets/{tid}/assignee",
+        viewer_id=viewer["id"],
     ) as op:
         result = svc.assign_by_key(tid, payload.assignee_id)
         op["ticket_ref"] = result.get("id")
@@ -172,13 +215,19 @@ def assign_ticket(
 
 @router.patch("/tickets/{tid}/priority")
 def set_priority(
-    tid: str, payload: PriorityUpdate, svc: TicketService = Depends(get_ticket_service)
+    tid: str,
+    payload: PriorityUpdate,
+    viewerId: Optional[str] = None,
+    svc: TicketService = Depends(get_ticket_service),
 ):
+    viewer = svc.require_viewer(viewerId)
+    svc.require_staff(viewer)
     with flow_operation(
         "tickets.priority",
         operation="tickets.priority",
         method="PATCH",
         path=f"/api/tickets/{tid}/priority",
+        viewer_id=viewer["id"],
     ) as op:
         result = svc.set_priority(tid, payload.priority)
         op["ticket_ref"] = result.get("id")
@@ -187,13 +236,19 @@ def set_priority(
 
 @router.patch("/tickets/{tid}/category")
 def set_category(
-    tid: str, payload: CategoryUpdate, svc: TicketService = Depends(get_ticket_service)
+    tid: str,
+    payload: CategoryUpdate,
+    viewerId: Optional[str] = None,
+    svc: TicketService = Depends(get_ticket_service),
 ):
+    viewer = svc.require_viewer(viewerId)
+    svc.require_staff(viewer)
     with flow_operation(
         "tickets.category",
         operation="tickets.category",
         method="PATCH",
         path=f"/api/tickets/{tid}/category",
+        viewer_id=viewer["id"],
     ) as op:
         result = svc.set_category(tid, payload.category)
         op["ticket_ref"] = result.get("id")
@@ -201,13 +256,18 @@ def set_category(
 
 
 @router.post("/tickets/{tid}/auto-assign")
-def auto_assign(tid: str, svc: TicketService = Depends(get_ticket_service)):
+def auto_assign(
+    tid: str, viewerId: Optional[str] = None, svc: TicketService = Depends(get_ticket_service)
+):
     """Route a ticket to the least-loaded HR agent (open count, then total)."""
+    viewer = svc.require_viewer(viewerId)
+    svc.require_staff(viewer)
     with flow_operation(
         "tickets.auto_assign",
         operation="tickets.auto_assign",
         method="POST",
         path=f"/api/tickets/{tid}/auto-assign",
+        viewer_id=viewer["id"],
     ) as op:
         result = svc.auto_assign(tid)
         op["ticket_ref"] = result.get("id")
@@ -216,13 +276,16 @@ def auto_assign(tid: str, svc: TicketService = Depends(get_ticket_service)):
 
 
 @router.get("/agents/workload")
-def workload(svc: TicketService = Depends(get_ticket_service)):
+def workload(viewerId: Optional[str] = None, svc: TicketService = Depends(get_ticket_service)):
     """GET /agents/workload — per-agent open/total ticket counts."""
+    viewer = svc.require_viewer(viewerId)
+    svc.require_staff(viewer)
     with flow_operation(
         "agents.workload",
         operation="agents.workload",
         method="GET",
         path="/api/agents/workload",
+        viewer_id=viewer["id"],
     ) as op:
         result = svc.agent_workload()
         op["agents"] = len(result)

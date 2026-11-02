@@ -20,19 +20,19 @@ from app.rag.repository import RagRepository
 from app.rag.service import RagService
 from app.repositories.attachment_storage import AttachmentStorageRepository
 from app.repositories.draft_repository import DraftRepository
+from app.repositories.feedback_repository import FeedbackRepository
 from app.repositories.kb_repository import KbRepository
 from app.repositories.notification_repository import NotificationRepository
 from app.repositories.ticket_repository import TicketRepository
 from app.repositories.user_repository import UserRepository
-from app.repositories.feedback_repository import FeedbackRepository
 from app.services.auth_service import AuthService
 from app.services.draft_service import DraftService
+from app.services.feedback_service import FeedbackService
 from app.services.kb_service import KbService
 from app.services.log_ingest_service import LogIngestService
 from app.services.notification_service import NotificationService
 from app.services.ticket_service import TicketService
 from app.services.user_service import UserService
-from app.services.feedback_service import FeedbackService
 
 
 def get_database():
@@ -71,11 +71,11 @@ def get_kb_repo(database: ConnectionPool = Depends(get_database)) -> KbRepositor
     return KbRepository(database)
 
 
-
 def get_feedback_repo(
     database: ConnectionPool = Depends(get_database),
 ) -> FeedbackRepository:
     return FeedbackRepository(database)
+
 
 # -- services ---------------------------------------------------------------
 

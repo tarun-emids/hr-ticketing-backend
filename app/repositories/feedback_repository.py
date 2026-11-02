@@ -6,6 +6,7 @@ from psycopg_pool import ConnectionPool
 
 from app.repositories.base import as_uuid, first_of, insert_row, update_row
 
+
 class FeedbackRepository:
     def __init__(self, database: ConnectionPool):
         self._database = database

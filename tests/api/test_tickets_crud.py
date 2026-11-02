@@ -3,6 +3,11 @@ import uuid as uuidlib
 from tests.conftest import U, ticket_payload
 
 
+def items(r):
+    """The only legal reading of GET /tickets after legacy removal."""
+    return r.json()["items"]
+
+
 def test_create_ticket_returns_frontend_shape(api):
     r = api.client.post("/api/tickets", json=ticket_payload(U["priya"]))
     assert r.status_code == 201, r.text
@@ -85,7 +90,7 @@ def test_create_ticket_agent_not_allowed_as_employee(api):
 
 
 def test_get_ticket_by_ref(api):
-    r = api.client.get("/api/tickets/TKT-101")
+    r = api.client.get("/api/tickets/TKT-101", params={"viewerId": U["alicia"]})
     assert r.status_code == 200
     t = r.json()
     assert t["id"] == "TKT-101"
@@ -94,21 +99,21 @@ def test_get_ticket_by_ref(api):
 
 
 def test_get_ticket_by_numeric_key(api):
-    r = api.client.get("/api/tickets/101")
+    r = api.client.get("/api/tickets/101", params={"viewerId": U["alicia"]})
     assert r.status_code == 200
     assert r.json()["id"] == "TKT-101"
 
 
 def test_get_ticket_by_uuid(api):
     created = api.client.post("/api/tickets", json=ticket_payload(U["tomas"])).json()
-    r = api.client.get(f"/api/tickets/{created['uuid']}")
+    r = api.client.get(f"/api/tickets/{created['uuid']}", params={"viewerId": U["alicia"]})
     assert r.status_code == 200
     assert r.json()["uuid"] == created["uuid"]
 
 
 def test_get_ticket_missing(api):
     for key in ("TKT-999", "999"):
-        r = api.client.get(f"/api/tickets/{key}")
+        r = api.client.get(f"/api/tickets/{key}", params={"viewerId": U["alicia"]})
         assert r.status_code == 404, key
 
 
@@ -127,38 +132,38 @@ def test_get_ticket_returns_full_thread_with_replies(api):
 
 def test_list_tickets_newest_first(api):
     api.client.post("/api/tickets", json=ticket_payload(U["dana"]))
-    r = api.client.get("/api/tickets")
-    ids = [t["id"] for t in r.json()]
-    assert all(t["turns"] == [] for t in r.json())
+    r = api.client.get("/api/tickets", params={"viewerId": U["alicia"]})
+    ids = [t["id"] for t in items(r)]
+    assert all(t["turns"] == [] for t in items(r))
     assert ids == ["TKT-104", "TKT-103", "TKT-102", "TKT-101"]
-    fetched = api.client.get(f"/api/tickets/{ids[0]}").json()
+    fetched = api.client.get(f"/api/tickets/{ids[0]}", params={"viewerId": U["alicia"]}).json()
     assert fetched["employeeId"] == U["dana"]
 
 
 def test_list_tickets_filters(api):
-    r = api.client.get("/api/tickets", params={"status": "Resolved"})
-    assert [t["id"] for t in r.json()] == ["TKT-103"]
+    r = api.client.get("/api/tickets", params={"status": "Resolved", "viewerId": U["alicia"]})
+    assert [t["id"] for t in items(r)] == ["TKT-103"]
 
-    r = api.client.get("/api/tickets", params={"category": "Leave"})
-    assert [t["id"] for t in r.json()] == ["TKT-102"]
+    r = api.client.get("/api/tickets", params={"category": "Leave", "viewerId": U["alicia"]})
+    assert [t["id"] for t in items(r)] == ["TKT-102"]
 
-    r = api.client.get("/api/tickets", params={"priority": "Urgent"})
-    assert [t["id"] for t in r.json()] == ["TKT-103"]
+    r = api.client.get("/api/tickets", params={"priority": "Urgent", "viewerId": U["alicia"]})
+    assert [t["id"] for t in items(r)] == ["TKT-103"]
 
-    r = api.client.get("/api/tickets", params={"employeeId": U["marcus"]})
-    assert [t["id"] for t in r.json()] == ["TKT-102"]
+    r = api.client.get("/api/tickets", params={"employeeId": U["marcus"], "viewerId": U["alicia"]})
+    assert [t["id"] for t in items(r)] == ["TKT-102"]
 
-    r = api.client.get("/api/tickets", params={"assigneeId": U["alicia"]})
-    assert [t["id"] for t in r.json()] == ["TKT-102"]
+    r = api.client.get("/api/tickets", params={"assigneeId": U["alicia"], "viewerId": U["alicia"]})
+    assert [t["id"] for t in items(r)] == ["TKT-102"]
 
-    r = api.client.get("/api/tickets", params={"unassigned": "true"})
-    assert set(t["id"] for t in r.json()) == {"TKT-101"}
+    r = api.client.get("/api/tickets", params={"unassigned": "true", "viewerId": U["alicia"]})
+    assert set(t["id"] for t in items(r)) == {"TKT-101"}
 
-    r = api.client.get("/api/tickets", params={"q": "carryover"})
-    assert [t["id"] for t in r.json()] == ["TKT-102"]
+    r = api.client.get("/api/tickets", params={"q": "carryover", "viewerId": U["alicia"]})
+    assert [t["id"] for t in items(r)] == ["TKT-102"]
 
 
-def test_list_tickets_limit(api):
-    r = api.client.get("/api/tickets", params={"limit": 1})
-    assert len(r.json()) == 1
-    assert r.json()[0]["id"] == "TKT-103"
+def test_list_tickets_page_size(api):
+    r = api.client.get("/api/tickets", params={"pageSize": 1, "viewerId": U["alicia"]})
+    assert len(items(r)) == 1
+    assert items(r)[0]["id"] == "TKT-103"

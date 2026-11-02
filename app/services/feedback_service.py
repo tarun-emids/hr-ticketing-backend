@@ -17,17 +17,15 @@ from app.services.ticket_service import TicketNotFound
 
 class FeedbackService:
     def __init__(
-            self,
-            feedbacks: FeedbackRepository,
-            tickets: TicketRepository,
-            users: UserRepository):
+        self, feedbacks: FeedbackRepository, tickets: TicketRepository, users: UserRepository
+    ):
         self._feedbacks = feedbacks
         self._tickets = tickets
         self._users = users
 
     def submit(self, tid: str, *, user_id: str, rating: int, comment: str) -> tuple[dict, bool]:
         """POST /tickets/{tid}/feedback. Returns (serialized_feedback, created)."""
-        ticket=self._tickets.get_by_key(tid)
+        ticket = self._tickets.get_by_key(tid)
         if not ticket:
             raise TicketNotFound()
 
@@ -70,7 +68,6 @@ class FeedbackService:
                 raise
             return self._replace(row, rating, comment), False
 
-
     def _replace(self, existing: dict, rating: int, comment: str) -> dict:
         return self._feedbacks.update_feedback(
             existing["id"], {"rating": rating, "comment": comment.strip()}
@@ -95,8 +92,5 @@ class FeedbackService:
 
         row = self._feedbacks.get_for_ticket(ticket["id"])
         if not row:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Ticket {ticket["ref"]} has no feedback."
-            )
+            raise HTTPException(status_code=404, detail=f"Ticket {ticket['ref']} has no feedback.")
         return feedback_out(row, ticket["ref"])

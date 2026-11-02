@@ -4,12 +4,17 @@ from app.repositories.user_repository import UserRepository
 from tests.conftest import U
 
 
+def items(r):
+    """The only legal reading of GET /tickets after legacy removal."""
+    return r.json()["items"]
+
+
 def reply(api, tid, author, text="Replying right here."):
     return api.client.post(f"/api/tickets/{tid}/replies", json={"authorId": author, "text": text})
 
 
 def test_agent_first_reply_stamps_and_moves_to_in_progress(api):
-    before = api.client.get("/api/tickets/TKT-101").json()
+    before = api.client.get("/api/tickets/TKT-101", params={"viewerId": U["alicia"]}).json()
     assert before["firstReplyAt"] is None
     assert before["status"] == "Open"
 
@@ -23,7 +28,7 @@ def test_agent_first_reply_stamps_and_moves_to_in_progress(api):
 
 
 def test_second_agent_reply_keeps_first_reply_at(api):
-    after_first = api.client.get("/api/tickets/TKT-102").json()
+    after_first = api.client.get("/api/tickets/TKT-102", params={"viewerId": U["alicia"]}).json()
     stamp = after_first["firstReplyAt"]
     r = reply(api, "TKT-102", U["ben"])
     t = r.json()
@@ -40,7 +45,7 @@ def test_employee_reply_moves_active_ticket_to_waiting_on_employee(api):
             "description": "Does the new dental plan cover partial orthodontic treatment, and where do I check coverage?",
         },
     )
-    created = api.client.get("/api/tickets").json()[0]["id"]
+    created = items(api.client.get("/api/tickets", params={"viewerId": U["alicia"]}))[0]["id"]
     r = reply(api, created, U["priya"])
     t = r.json()
     assert t["status"] == "Waiting on Employee"
@@ -101,7 +106,7 @@ def test_reopening_clears_resolved_at_and_closed_by(api):
     api.client.patch(
         "/api/tickets/TKT-101/status", json={"status": "In Progress", "actorId": U["ben"]}
     )
-    t = api.client.get("/api/tickets/TKT-101").json()
+    t = api.client.get("/api/tickets/TKT-101", params={"viewerId": U["alicia"]}).json()
     assert t["resolvedAt"] is None
     assert t["closedBy"] is None
 
@@ -110,7 +115,9 @@ def test_waiting_on_employee_keeps_timestamps(api):
     api.client.patch(
         "/api/tickets/TKT-101/status", json={"status": "Resolved", "actorId": U["ben"]}
     )
-    stamp = api.client.get("/api/tickets/TKT-101").json()["resolvedAt"]
+    stamp = api.client.get("/api/tickets/TKT-101", params={"viewerId": U["alicia"]}).json()[
+        "resolvedAt"
+    ]
     t = api.client.patch(
         "/api/tickets/TKT-101/status", json={"status": "Waiting on Employee", "actorId": U["ben"]}
     ).json()
@@ -144,7 +151,11 @@ def test_status_unknown_actor_rejected(api):
 
 
 def test_assign_to_unanswered_ticket_posts_pickup_reply(api):
-    r = api.client.patch("/api/tickets/TKT-101/assignee", json={"assigneeId": U["alicia"]})
+    r = api.client.patch(
+        "/api/tickets/TKT-101/assignee",
+        params={"viewerId": U["ben"]},
+        json={"assigneeId": U["alicia"]},
+    )
     t = r.json()
     assert t["assigneeId"] == U["alicia"]
     assert t["firstReplyAt"] is not None
@@ -167,11 +178,11 @@ def test_auto_assign_uses_postgresql_uuid_agent_ids(api, monkeypatch):
         return rows
 
     monkeypatch.setattr(UserRepository, "agents", agents_with_uuid_ids)
-    workload = api.client.get("/api/agents/workload")
+    workload = api.client.get("/api/agents/workload", params={"viewerId": U["ben"]})
     assert workload.status_code == 200
     assert len(workload.json()) == 3
 
-    response = api.client.post("/api/tickets/TKT-101/auto-assign")
+    response = api.client.post("/api/tickets/TKT-101/auto-assign", params={"viewerId": U["ben"]})
     assert response.status_code == 200, response.text
     ticket = response.json()
     assert ticket["assigneeId"] in {agent["id"] for agent in workload.json()}
@@ -187,9 +198,13 @@ def test_user_lookup_accepts_postgresql_uuid(api):
 
 
 def test_assign_to_already_replied_ticket_no_duplicate_pickup(api):
-    before = api.client.get("/api/tickets/TKT-102").json()
+    before = api.client.get("/api/tickets/TKT-102", params={"viewerId": U["alicia"]}).json()
     stamp = before["firstReplyAt"]
-    r = api.client.patch("/api/tickets/TKT-102/assignee", json={"assigneeId": U["ben"]})
+    r = api.client.patch(
+        "/api/tickets/TKT-102/assignee",
+        params={"viewerId": U["ben"]},
+        json={"assigneeId": U["ben"]},
+    )
     t = r.json()
     assert t["assigneeId"] == U["ben"]
     assert t["firstReplyAt"] == stamp
@@ -198,35 +213,55 @@ def test_assign_to_already_replied_ticket_no_duplicate_pickup(api):
 
 
 def test_unassign(api):
-    r = api.client.patch("/api/tickets/TKT-102/assignee", json={"assigneeId": None})
+    r = api.client.patch(
+        "/api/tickets/TKT-102/assignee", params={"viewerId": U["ben"]}, json={"assigneeId": None}
+    )
     assert r.json()["assigneeId"] is None
 
 
 def test_assign_unknown_user(api):
-    r = api.client.patch("/api/tickets/TKT-101/assignee", json={"assigneeId": U["priya"]})
+    r = api.client.patch(
+        "/api/tickets/TKT-101/assignee",
+        params={"viewerId": U["ben"]},
+        json={"assigneeId": U["priya"]},
+    )
     assert r.status_code == 422
     assert "must be an HR agent" in r.json()["detail"]
 
 
 def test_set_priority_and_category(api):
-    t = api.client.patch("/api/tickets/TKT-101/priority", json={"priority": "Urgent"}).json()
+    t = api.client.patch(
+        "/api/tickets/TKT-101/priority", params={"viewerId": U["ben"]}, json={"priority": "Urgent"}
+    ).json()
     assert t["priority"] == "Urgent"
-    t = api.client.patch("/api/tickets/TKT-101/category", json={"category": "Leave"}).json()
+    t = api.client.patch(
+        "/api/tickets/TKT-101/category", params={"viewerId": U["ben"]}, json={"category": "Leave"}
+    ).json()
     assert t["category"] == "Leave"
 
 
 def test_set_priority_invalid(api):
-    r = api.client.patch("/api/tickets/TKT-101/priority", json={"priority": "Someday"})
+    r = api.client.patch(
+        "/api/tickets/TKT-101/priority", params={"viewerId": U["ben"]}, json={"priority": "Someday"}
+    )
     assert r.status_code == 422
 
 
 def test_set_category_invalid(api):
-    r = api.client.patch("/api/tickets/TKT-101/category", json={"category": "Wages"})
+    r = api.client.patch(
+        "/api/tickets/TKT-101/category", params={"viewerId": U["ben"]}, json={"category": "Wages"}
+    )
     assert r.status_code == 422
 
 
 def test_updates_bump_updated_at(api):
-    before = api.client.get("/api/tickets/TKT-101").json()["updatedAt"]
-    api.client.patch("/api/tickets/TKT-101/priority", json={"priority": "Low"})
-    after = api.client.get("/api/tickets/TKT-101").json()["updatedAt"]
+    before = api.client.get("/api/tickets/TKT-101", params={"viewerId": U["alicia"]}).json()[
+        "updatedAt"
+    ]
+    api.client.patch(
+        "/api/tickets/TKT-101/priority", params={"viewerId": U["ben"]}, json={"priority": "Low"}
+    )
+    after = api.client.get("/api/tickets/TKT-101", params={"viewerId": U["alicia"]}).json()[
+        "updatedAt"
+    ]
     assert after > before

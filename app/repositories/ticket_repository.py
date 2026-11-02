@@ -2,6 +2,7 @@
 
 import re
 import time
+import uuid
 from contextlib import contextmanager
 from typing import Optional
 
@@ -47,6 +48,24 @@ def ticket_ref(tid: str) -> tuple[str, str]:
     return "ref", tid if REF_RE.match(tid) else f"TKT-{tid}"
 
 
+# Whitelisted sort options. Values are fixed SQL expressions; the client
+# string only ever *selects* one of these — it is never interpolated.
+_SORT_EXPRESSIONS = {
+    "updated": "updated_at",
+    "created": "created_at",
+    "priority": (
+        "CASE priority WHEN 'Urgent' THEN 4 WHEN 'High' THEN 3 WHEN 'Medium' THEN 2 ELSE 1 END"
+    ),
+    "subject": "LOWER(subject)",
+    "status": (
+        "CASE status WHEN 'Open' THEN 1 WHEN 'In Progress' THEN 2"
+        " WHEN 'Waiting on Employee' THEN 3 WHEN 'Resolved' THEN 4 ELSE 5 END"
+    ),
+    "employee": "LOWER(users.name)",
+}
+_SORT_DIRECTIONS = {"asc": "ASC", "desc": "DESC"}
+
+
 class TicketRepository:
     def __init__(self, database: ConnectionPool):
         self._database = database
@@ -60,9 +79,49 @@ class TicketRepository:
             table="tickets",
         )
 
+    def _ticket_filters(
+        self,
+        *,
+        employee_scope_id: Optional[uuid.UUID],
+        status: Optional[str],
+        category: Optional[str],
+        priority: Optional[str],
+        employee_id: Optional[str],
+        assignee_id: Optional[str],
+        q: Optional[str],
+        unassigned: bool,
+    ) -> tuple[list[str], list]:
+        """Single source of truth for ticket-list/scope predicates: the WHERE
+        fragments and their parameter values. Both the page query and the
+        total-count query build on them, so the two can never disagree about
+        what a filtered view contains. Returns fresh lists; callers append
+        statement-specific parameters (LIMIT) only to their own copies."""
+        filters: list[str] = []
+        params: list = []
+        if employee_scope_id is not None:
+            filters.append("employee_id = %s")
+            params.append(employee_scope_id)
+        for column, value in (("status", status), ("category", category), ("priority", priority)):
+            if value is not None:
+                filters.append(f"{column} = %s")
+                params.append(value)
+        for column, value in (("employee_id", employee_id), ("assignee_id", assignee_id)):
+            if value is not None:
+                filters.append(f"{column} = %s")
+                params.append(as_uuid(value))
+        if unassigned:
+            filters.append("assignee_id IS NULL")
+        if q:
+            filters.append("subject ILIKE %s")
+            params.append(f"%{q}%")
+        return filters, params
+
     def list_filtered(
         self,
         *,
+        employee_scope_id: Optional[uuid.UUID] = None,
+        sort: str = "updated",
+        order: str = "desc",
         status: Optional[str] = None,
         category: Optional[str] = None,
         priority: Optional[str] = None,
@@ -71,32 +130,64 @@ class TicketRepository:
         q: Optional[str] = None,
         unassigned: bool = False,
         limit: int = 200,
+        offset: int = 0,
     ) -> list[dict]:
-        filters = []
-        params = []
-        for column, value in (
-            ("status", status),
-            ("category", category),
-            ("priority", priority),
-            ("employee_id", employee_id),
-            ("assignee_id", assignee_id),
-        ):
-            if value is not None:
-                filters.append(f"{column} = %s")
-                params.append(as_uuid(value) if column in ("employee_id", "assignee_id") else value)
-        if unassigned:
-            filters.append("assignee_id IS NULL")
-        if q:
-            filters.append("subject ILIKE %s")
-            params.append(f"%{q}%")
+        filters, params = self._ticket_filters(
+            employee_scope_id=employee_scope_id,
+            status=status,
+            category=category,
+            priority=priority,
+            employee_id=employee_id,
+            assignee_id=assignee_id,
+            q=q,
+            unassigned=unassigned,
+        )
+        from_clause = "tickets"
+        if sort == "employee":
+            from_clause = "tickets LEFT JOIN users ON users.id = tickets.employee_id"
         where = f" WHERE {' AND '.join(filters)}" if filters else ""
-        params.append(min(limit, 500))
+        params = [*params, min(limit, 500), offset]
         return rows_of(
             self._database,
-            f"SELECT * FROM tickets{where} ORDER BY updated_at DESC LIMIT %s",
+            f"SELECT tickets.* FROM {from_clause}{where}"
+            f" ORDER BY {_SORT_EXPRESSIONS[sort]} {_SORT_DIRECTIONS[order]},"
+            f" updated_at DESC, number DESC LIMIT %s OFFSET %s",
             tuple(params),
             table="tickets",
         )
+
+    def count_filtered(
+        self,
+        *,
+        employee_scope_id: Optional[uuid.UUID] = None,
+        status: Optional[str] = None,
+        category: Optional[str] = None,
+        priority: Optional[str] = None,
+        employee_id: Optional[str] = None,
+        assignee_id: Optional[str] = None,
+        q: Optional[str] = None,
+        unassigned: bool = False,
+    ) -> int:
+        """Exact total for one filtered ticket view — the aggregate count over
+        the IDENTICAL predicate list_filtered uses, no LIMIT attached."""
+        filters, params = self._ticket_filters(
+            employee_scope_id=employee_scope_id,
+            status=status,
+            category=category,
+            priority=priority,
+            employee_id=employee_id,
+            assignee_id=assignee_id,
+            q=q,
+            unassigned=unassigned,
+        )
+        where = f" WHERE {' AND '.join(filters)}" if filters else ""
+        row = first_of(
+            self._database,
+            f"SELECT count(*) AS total FROM tickets{where}",
+            tuple(params),
+            table="tickets",
+        )
+        return int(row["total"])
 
     def scan_assignee_status(self, limit: int = 2000) -> list[dict]:
         return rows_of(
