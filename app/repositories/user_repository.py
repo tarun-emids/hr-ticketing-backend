@@ -33,7 +33,7 @@ class UserRepository:
     def get_credentials_by_email(self, email: str) -> Optional[dict]:
         return first_of(
             self._database,
-            "SELECT id, name, email, role, password_hash FROM users "
+            "SELECT id, name, email, role, password_hash, auth_version FROM users "
             "WHERE lower(email) = lower(%s) LIMIT 1",
             (email,),
             table="users",
@@ -49,8 +49,18 @@ class UserRepository:
     def set_password_hash(self, user_id: str, password_hash: str) -> None:
         run(
             self._database,
-            "UPDATE users SET password_hash = %s WHERE id = %s",
+            "UPDATE users SET password_hash = %s, auth_version = auth_version + 1 WHERE id = %s",
             (password_hash, as_uuid(user_id)),
+            fetch="none",
+            table="users",
+        )
+
+    def upgrade_password_hash(self, user_id: str, old_hash: str, new_hash: str) -> int:
+        return run(
+            self._database,
+            "UPDATE users SET password_hash = %s, auth_version = auth_version + 1 "
+            "WHERE id = %s AND password_hash = %s",
+            (new_hash, as_uuid(user_id), old_hash),
             fetch="none",
             table="users",
         )

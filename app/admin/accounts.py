@@ -48,6 +48,8 @@ class AdminAccountService:
             raise HTTPException(status_code=422, detail="Name and a valid email are required.")
         if len(password) < 8:
             raise HTTPException(status_code=422, detail="Password must be at least 8 characters.")
+        if len(password.encode("utf-8")) > 72:
+            raise HTTPException(status_code=422, detail="Password must be at most 72 UTF-8 bytes.")
         if self._users.get_by_email_case_insensitive(email):
             raise HTTPException(
                 status_code=409, detail="An account with that email already exists."

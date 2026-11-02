@@ -1,7 +1,6 @@
 """In-app notifications endpoints.
 
-Every endpoint is scoped by the acting user (`userId`, the mock-auth
-stand-in for a token): the service queries below are hard-scoped to rows
+Every endpoint is scoped by the acting user (`userId`): the service queries below are hard-scoped to rows
 whose recipient_id equals that user — there is no way to read or mark
 someone else's notifications through this controller.
 
