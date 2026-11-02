@@ -52,7 +52,14 @@ class _Cursor:
         if row is None:
             return None
         result = dict(row)
-        for column in ("created_at", "updated_at", "first_reply_at", "resolved_at", "read_at"):
+        for column in (
+            "created_at",
+            "updated_at",
+            "first_reply_at",
+            "resolved_at",
+            "read_at",
+            "expires_at",
+        ):
             value = result.get(column)
             if isinstance(value, str):
                 result[column] = datetime.fromisoformat(value.replace("Z", "+00:00"))
@@ -116,7 +123,14 @@ class SQLitePool:
             CREATE TABLE users (
               id TEXT PRIMARY KEY, name TEXT NOT NULL, email TEXT NOT NULL UNIQUE,
               role TEXT NOT NULL CHECK (role IN ('employee', 'agent', 'admin')), password_hash TEXT,
+              auth_version INTEGER NOT NULL DEFAULT 0,
               created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+00:00', 'now'))
+            );
+            CREATE TABLE password_reset_otps (
+              user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+              otp_hash TEXT NOT NULL, expires_at TEXT NOT NULL,
+              attempts INTEGER NOT NULL DEFAULT 0,
+              created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
             CREATE TABLE tickets (
               number INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -405,7 +419,14 @@ def api(monkeypatch):
     fake.seed()
     monkeypatch.setattr(app_config, "RETRY_MAX_ATTEMPTS", 1)
     monkeypatch.setattr(app_config, "get_database", lambda: fake)
-    client = TestClient(app_main.app)
+    from app.services.tokens import create_access_token
+
+    client = TestClient(
+        app_main.app,
+        headers={
+            "Authorization": f"Bearer {create_access_token({'id': U['priya'], 'auth_version': 0})}"
+        },
+    )
     yield SimpleNamespace(client=client, fake=fake, U=U)
     fake.close()
 

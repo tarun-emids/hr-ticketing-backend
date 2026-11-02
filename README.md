@@ -21,7 +21,7 @@ app/
 Controllers parse requests and call services. Services own business rules and
 domain errors. Repositories execute parameterized SQL through psycopg 3; the
 PostgreSQL schema enforces relationships, checks, generated ticket references,
-and update timestamps. Login credentials use salted scrypt hashes stored in
+and update timestamps. Login credentials use bcrypt hashes stored in
 `users.password_hash`. Attachment bytes are kept in the `attachments` table
 and served only through short-lived HMAC-signed URLs.
 
@@ -47,12 +47,15 @@ Use Python 3.14 (the project uses lazy class-body annotations).
    ```dotenv
    DATABASE_URL=postgresql://hrdesk:password@localhost:5432/hrdesk
    ATTACHMENT_SIGNING_KEY=<output-of-openssl-rand-hex-32>
+   AUTH_SIGNING_KEY=<output-of-openssl-rand-hex-32>
    ```
 
-   Generate the key with `openssl rand -hex 32`. Keep it private and identical
-   across all workers and restarts; existing signed URLs become invalid if it
-   changes. For hosted PostgreSQL, use the provider's SSL-enabled connection
-   URL. Pool size can be tuned with `DB_POOL_MIN_SIZE` and `DB_POOL_MAX_SIZE`.
+   Generate each key with `openssl rand -hex 32`. Keep them private and
+   identical across all workers and restarts; changing the auth key invalidates
+   login tokens. Mailpit's default SMTP endpoint is `127.0.0.1:1025`; configure
+   `MAILPIT_HOST` and `MAILPIT_PORT` to match your local Mailpit service.
+   For hosted PostgreSQL, use the provider's SSL-enabled connection URL. Pool
+   size can be tuned with `DB_POOL_MIN_SIZE` and `DB_POOL_MAX_SIZE`.
 4. Install and run:
 
    ```bash
@@ -66,8 +69,9 @@ Use Python 3.14 (the project uses lazy class-body annotations).
 
    The provisioning command sets an initial password for every account. Use
    `--password` or `HR_DESK_TEMP_PASSWORD` to provide it non-interactively.
-   Passwords must contain at least 12 characters. Do not commit `.env` or
-   supply passwords as command-line arguments in shared shell history.
+   Passwords must contain at least 12 characters and no more than 72 UTF-8
+   bytes (bcrypt's input limit). Do not commit `.env` or supply passwords as
+   command-line arguments in shared shell history.
    To seed the policy library and render its PDFs into PostgreSQL, install
    `scripts/requirements-seed.txt` and run
    `python scripts/seed_knowledge_base.py`.
@@ -199,6 +203,9 @@ The API paths and JSON response shapes remain the same:
 | Frontend operation | Endpoint |
 | --- | --- |
 | Login | `POST /api/auth/login` |
+| Request a password-reset OTP | `POST /api/auth/forgot-password` |
+| Reset password with OTP | `POST /api/auth/reset-password` |
+| Change password while signed in | `POST /api/auth/password` |
 | Create/list tickets | `POST /api/tickets`, `GET /api/tickets?...` |
 | Get ticket by reference or UUID | `GET /api/tickets/{TKT-n or uuid}` |
 | Add reply | `POST /api/tickets/{id}/replies` |
@@ -220,6 +227,20 @@ Attachment upload remains capped at 5 MB. `GET /api/tickets/{id}/attachment`
 returns `{name, size, url, expiresInSeconds}`; the URL points back to the API
 and is valid for 60 seconds to 24 hours (default one hour). Draft attachment
 URLs are similarly scoped to the employee-owned draft.
+
+Login returns an expiring bearer access token. Send it as
+`Authorization: Bearer <accessToken>` to API endpoints; account and
+knowledge-base administration checks the authenticated database account's
+admin role rather than trusting a caller-supplied actor ID. There is no public
+signup route: admins create accounts through `POST /api/admin/accounts`.
+All new passwords and reset OTPs use bcrypt; existing scrypt password hashes
+are upgraded after a successful login when they fit bcrypt's 72-byte limit.
+All `/api` endpoints require a valid bearer token except login and the public
+forgot/reset-password endpoints. Forgot-password requests return the same
+response for existing and unknown emails. For an existing account, the API
+emails a six-digit OTP through
+Mailpit, valid for 10 minutes by default and limited to five guesses. Changing
+or resetting a password invalidates previously issued access tokens.
 
 ## Notifications
 
