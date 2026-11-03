@@ -17,6 +17,7 @@ from pydantic.alias_generators import to_camel
 CATEGORIES = ["Payroll", "Leave", "Benefits", "Onboarding", "Policy", "Other"]
 PRIORITIES = ["Low", "Medium", "High", "Urgent"]
 STATUSES = ["Open", "In Progress", "Waiting on Employee", "Resolved", "Closed"]
+ACTIVE_STATUSES: tuple[str, ...] = ("Open", "In Progress", "Waiting on Employee")
 
 
 class CamelModel(BaseModel):

@@ -9,6 +9,10 @@ from tests.integration.conftest import create_ticket
 pytestmark = pytest.mark.integration
 
 
+def items(r):
+    return r.json()["items"]
+
+
 def test_live_users_agents_meta(live):
     r = live["client"].get("/api/users")
     assert r.status_code == 200
@@ -25,7 +29,7 @@ def test_live_users_agents_meta(live):
 
 def test_live_create_get_roundtrip(live, cleanup):
     ref = create_ticket(live)
-    r = live["client"].get(f"/api/tickets/{ref}")
+    r = live["client"].get(f"/api/tickets/{ref}", params={"viewerId": live["agents"][0]["id"]})
     assert r.status_code == 200
     t = r.json()
     assert t["id"] == ref
@@ -89,8 +93,8 @@ def test_live_assign_pickup_reply(live, cleanup):
 
 
 def test_live_employee_reply_waits(live, cleanup):
-    ref = create_ticket(live)
     employee = live["employees"][2]["id"]
+    ref = create_ticket(live, employee=employee)
     r = live["client"].patch(
         f"/api/tickets/{ref}/status",
         json={"status": "In Progress", "actorId": live["agents"][0]["id"]},
@@ -142,23 +146,25 @@ def test_live_validation_422(live, cleanup):
 
 
 def test_live_missing_ticket_404(live):
-    r = live["client"].get("/api/tickets/TKT-999999")
+    r = live["client"].get("/api/tickets/TKT-999999", params={"viewerId": live["agents"][0]["id"]})
     assert r.status_code == 404
 
 
 def test_live_list_filters_see_created_ticket(live, cleanup):
     ref_a = create_ticket(live, employee=live["employees"][0]["id"], category="Leave")
     ref_b = create_ticket(live, employee=live["employees"][1]["id"], category="Leave")
-
-    r = live["client"].get("/api/tickets", params={"category": "Leave"})
-    ids = [t["id"] for t in r.json()]
+    agent = live["agents"][0]["id"]
+    r = live["client"].get("/api/tickets", params={"category": "Leave", "viewerId": agent})
+    ids = [t["id"] for t in items(r)]
     assert ref_a in ids and ref_b in ids
 
-    r = live["client"].get("/api/tickets", params={"employeeId": live["employees"][1]["id"]})
-    assert ref_b in [t["id"] for t in r.json()]
+    r = live["client"].get(
+        "/api/tickets", params={"employeeId": live["employees"][1]["id"], "viewerId": agent}
+    )
+    assert ref_b in [t["id"] for t in items(r)]
 
-    r = live["client"].get("/api/tickets", params={"unassigned": "true"})
-    assert {ref_a, ref_b} <= {t["id"] for t in r.json()}
+    r = live["client"].get("/api/tickets", params={"unassigned": "true", "viewerId": agent})
+    assert {ref_a, ref_b} <= {t["id"] for t in items(r)}
 
 
 def test_live_attachment_roundtrip(live, cleanup):
@@ -256,7 +262,30 @@ def test_live_feedback_roundtrip(live, cleanup):
     from app.config import get_database
     from app.repositories.feedback_repository import FeedbackRepository
 
-    ticket_uuid = live["client"].get(f"/api/tickets/{ref}").json()["uuid"]
+    ticket_uuid = (
+        live["client"].get(f"/api/tickets/{ref}", params={"viewerId": agent}).json()["uuid"]
+    )
     row = FeedbackRepository(get_database()).get_for_ticket(ticket_uuid)
     assert row["rating"] == 5
     assert row["comment"] == "resolved properly"
+
+
+def test_live_agents_workload_group_by(live, cleanup):
+    """The GROUP BY aggregate runs the identical statement live; one created
+    and assigned ticket moves exactly [open, total] for the assignee."""
+    agent = live["agents"][0]["id"]
+    wl = live["client"].get("/api/agents/workload", params={"viewerId": agent})
+    assert wl.status_code == 200
+    before = {row["id"]: (row["openCount"], row["totalCount"]) for row in wl.json()}
+
+    ref = create_ticket(live)
+    r = live["client"].patch(
+        f"/api/tickets/{ref}/assignee",
+        params={"viewerId": agent},
+        json={"assigneeId": agent},
+    )
+    assert r.status_code == 200
+
+    wl = live["client"].get("/api/agents/workload", params={"viewerId": agent})
+    after = {row["id"]: (row["openCount"], row["totalCount"]) for row in wl.json()}
+    assert after[agent] == (before[agent][0] + 1, before[agent][1] + 1)

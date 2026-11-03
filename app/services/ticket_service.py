@@ -30,7 +30,7 @@ from typing import Optional
 
 from fastapi import HTTPException
 
-from app.models import ticket_out
+from app.models import ACTIVE_STATUSES, ticket_out
 from app.observability import flow_event
 from app.repositories.attachment_storage import AttachmentStorageRepository
 from app.repositories.base import UUID_RE, as_uuid
@@ -47,8 +47,6 @@ from app.services.notification_service import (
     reply_recipients,
     status_recipients,
 )
-
-ACTIVE_STATUSES = ("Open", "In Progress", "Waiting on Employee")
 
 AGENT_PICKUP_TEXT = "Thanks for raising this — I've picked it up and will get back to you shortly."
 
@@ -211,20 +209,15 @@ class TicketService:
     def agent_workload(self) -> list[dict]:
         """GET /agents/workload — per-agent open/total ticket counts.
 
-        Single lightweight scan; aggregate in Python (v2: no .not_ chains
-        needed). Agents ordered by account creation date."""
+        One GROUP BY aggregate in the repository keyed by assignee; the
+        agent roster supplies ordering (account creation date) and the
+        zero-count defaults via the same [0, 0] schema as before. No
+        viewer data participates, so no per-viewer keying exists."""
         agents = self._users.agents()
-        scan = self._tickets.scan_assignee_status(2000)
-        counts: dict[str, list[int]] = {}  # id -> [open, total]
-        for t in scan:
-            assignee = t.get("assignee_id")
-            if not assignee:
-                continue
-            entry = counts.setdefault(assignee, [0, 0])
-            entry[1] += 1
-            if t["status"] in ACTIVE_STATUSES:
-                entry[0] += 1
-
+        counts = {
+            row["agent_id"]: [row["open_count"], row["total_count"]]
+            for row in self._tickets.count_by_assignee(ACTIVE_STATUSES)
+        }
         return [
             {
                 "id": u["id"],

@@ -197,6 +197,22 @@ class TicketRepository:
             table="tickets",
         )
 
+    def count_by_assignee(self, statuses: tuple[str, ...]) -> list[dict]:
+        """Per-assignee workload counters: one row per assignee with its
+        total and the count within `statuses`. Unassigned tickets form no
+        group; agents without tickets are absent here — the service
+        supplies [0, 0] defaults. No LIMIT: the aggregation runs entirely
+        in the database, so no row ceiling exists to outlive."""
+        placeholders = ", ".join(["%s"] * len(statuses))
+        return rows_of(
+            self._database,
+            f"SELECT assignee_id AS agent_id, count(*) AS total_count,"
+            f" sum(CASE WHEN status IN ({placeholders}) THEN 1 ELSE 0 END) AS open_count"
+            f" FROM tickets WHERE assignee_id IS NOT NULL GROUP BY assignee_id",
+            tuple(statuses),
+            table="tickets",
+        )
+
     def unassigned_by_statuses(self, statuses: tuple) -> list[dict]:
         placeholders = ", ".join(["%s"] * len(statuses))
         return rows_of(
