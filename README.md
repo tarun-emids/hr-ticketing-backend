@@ -29,6 +29,22 @@ and served only through short-lived HMAC-signed URLs.
 
 Use Python 3.14 (the project uses lazy class-body annotations).
 
+### Local stack with Docker
+
+From this directory, run `make up` to build and start the API and a local
+PostgreSQL database. The database is initialized from `schema.sql` on first
+startup. The API is available at <http://localhost:8000/docs>. Stop only the
+backend and database with `make down`; PostgreSQL data persists in a Docker
+volume across shutdowns. Start the frontend separately from
+`../hr-ticketing-frontend` with its own `make up`. This stack also starts
+Mailpit at <http://localhost:8025> for local email inspection.
+
+The credentials and signing key used by this local stack are development-only.
+For Gemini assistant access, set `RAG_GEMINI_API_KEY` in this directory's
+`.env` file before starting the backend.
+
+### External PostgreSQL or host-based setup
+
 1. Create a PostgreSQL database and a dedicated application role. Grant it
    access to the database and schema; the backend does not require Supabase,
    PostgREST, GoTrue, or Supabase Storage.
