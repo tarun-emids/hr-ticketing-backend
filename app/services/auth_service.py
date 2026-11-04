@@ -3,6 +3,9 @@
 import re
 import secrets
 from datetime import datetime, timedelta, timezone
+import smtplib
+from datetime import datetime, timedelta, timezone
+from email.message import EmailMessage
 
 from fastapi import HTTPException
 
@@ -13,6 +16,9 @@ from app.repositories.user_repository import UserRepository
 from app.services.mailpit import send_password_reset_otp
 from app.services.passwords import hash_password, verify_password
 from app.services.tokens import create_access_token
+
+PASSWORD_RESET_TTL = timedelta(minutes=10)
+PASSWORD_RESET_MESSAGE = "If an account exists for this address, a reset code has been emailed."
 
 
 def _invisible_chars_pattern() -> str:
@@ -43,6 +49,23 @@ def clean_email(raw: str) -> str:
     return _INVISIBLE_CHARS.sub("", raw.strip()).lower()
 
 
+def send_password_reset_email(recipient: str, code: str) -> None:
+    message = EmailMessage()
+    message["Subject"] = "Your HR Desk password reset code"
+    message["From"] = config.SMTP_FROM
+    message["To"] = recipient
+    message.set_content(
+        f"Your HR Desk password reset code is {code}. "
+        "It expires in 10 minutes. If you did not request this, you can ignore this email."
+    )
+    with smtplib.SMTP(config.SMTP_HOST, config.SMTP_PORT, timeout=10) as smtp:
+        if config.SMTP_STARTTLS:
+            smtp.starttls()
+        if config.SMTP_USERNAME:
+            smtp.login(config.SMTP_USERNAME, config.SMTP_PASSWORD)
+        smtp.send_message(message)
+
+
 _DUMMY_PASSWORD_HASH = hash_password("not-a-real-account-password")
 
 
@@ -50,6 +73,9 @@ class AuthService:
     def __init__(self, users: UserRepository, resets: PasswordResetRepository | None = None):
         self._users = users
         self._resets = resets
+    def __init__(self, users: UserRepository, reset_email_sender=None):
+        self._users = users
+        self._reset_email_sender = reset_email_sender
 
     def login(self, email: str, password: str) -> dict:
         """Verify credentials, upgrade legacy hashes, and issue a bearer token."""
@@ -137,6 +163,54 @@ def _validated_password_hash(password: str) -> str:
     if len(password.encode("utf-8")) > 72:
         raise HTTPException(status_code=422, detail="Password must be at most 72 UTF-8 bytes.")
     return hash_password(password)
+
+    def request_password_reset(self, email: str) -> dict:
+        email = clean_email(email)
+        user = self._users.get_password_reset_account_by_email(email)
+        if not user:
+            return {"message": PASSWORD_RESET_MESSAGE}
+
+        code = f"{secrets.randbelow(1_000_000):06d}"
+        code_hash = hash_password(code)
+        now = datetime.now(timezone.utc)
+        self._users.store_password_reset_code(user["id"], code_hash, now + PASSWORD_RESET_TTL)
+        try:
+            sender = self._reset_email_sender or send_password_reset_email
+            sender(user["email"], code)
+        except (OSError, smtplib.SMTPException) as exc:
+            self._users.delete_password_reset_code(user["id"], code_hash)
+            raise HTTPException(
+                status_code=503,
+                detail="Password reset email is temporarily unavailable. Please try again.",
+            ) from exc
+        return {"message": PASSWORD_RESET_MESSAGE}
+
+    def reset_password(self, email: str, code: str, new_password: str) -> dict:
+        email = clean_email(email)
+        if len(new_password.encode("utf-8")) > 72:
+            raise HTTPException(
+                status_code=422,
+                detail="Your password must be at most 72 UTF-8 bytes.",
+            )
+
+        user = self._users.get_password_reset_account_by_email(email)
+        reset = self._users.get_password_reset_code(user["id"]) if user else None
+        if not reset or not verify_password(code, reset["code_hash"]):
+            raise HTTPException(status_code=400, detail="Invalid or expired reset code.")
+
+        now = datetime.now(timezone.utc)
+        expires_at = reset["expires_at"]
+        if isinstance(expires_at, str):
+            expires_at = datetime.fromisoformat(expires_at)
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if expires_at <= now or not self._users.consume_password_reset_code(
+            user["id"], reset["code_hash"], now
+        ):
+            raise HTTPException(status_code=400, detail="Invalid or expired reset code.")
+
+        self._users.set_password_hash(user["id"], hash_password(new_password))
+        return {"message": "Password reset successfully. Please sign in with your new password."}
 
 
 __all__ = ["AuthService", "clean_email", "hash_password", "verify_password"]

@@ -39,6 +39,23 @@ latest Alembic revision (below). The API is available at
 Start the frontend separately from `../hr-ticketing-frontend` with its own
 `make up`. This stack also starts Mailpit at <http://localhost:8025> for
 local email inspection.
+PostgreSQL database. The database is initialized from `schema.sql` on first
+startup. The API is available at <http://localhost:8000/docs>. Stop only the
+backend and database with `make down`; PostgreSQL data persists in a Docker
+volume across shutdowns. Start the frontend separately from
+`../hr-ticketing-frontend` with its own `make up`. This stack also starts
+Mailpit at <http://localhost:8025> for local email inspection; the backend
+sends password-reset codes to it automatically.
+After upgrading an existing database volume, apply schema changes with
+`docker compose exec -T db psql -U hrdesk -d hrdesk -v ON_ERROR_STOP=1 < schema.sql`.
+On startup, the local stack also loads any missing knowledge-base articles
+from the bundled PDFs. Existing articles are left unchanged.
+
+On first startup, the local stack sets passwords for demo accounts that do not
+already have one. The default local password is `ChangeMe123!`; override it
+before `make up` by setting `HR_DESK_TEMP_PASSWORD` in this directory's `.env`.
+Existing passwords are never replaced. This shared default is for local
+development only.
 
 The credentials and signing key used by this local stack are development-only.
 For Gemini assistant access, set `RAG_GEMINI_API_KEY` in this directory's
@@ -141,8 +158,9 @@ Notes:
 
 Policy PDFs live **inside the `kb_documents` table** (metadata + `data`
 bytea); the `/api/kb/{slug}/file` endpoint streams them to the browser after
-the same viewer/role gate as the metadata endpoints. To load the 30
-pre-rendered documents (data lives in `scripts/knowledge_base_pdfs/`):
+the same viewer/role gate as the metadata endpoints. The local Docker stack loads missing articles at startup. To load or refresh
+the 30 pre-rendered documents manually (data lives in
+`scripts/knowledge_base_pdfs/`):
 
 ```bash
 # revision 0001 (applied above) creates the kb_documents table

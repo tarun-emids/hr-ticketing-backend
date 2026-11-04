@@ -43,6 +43,14 @@ class PasswordResetComplete(CamelModel):
 class PasswordChange(CamelModel):
     current_password: str = Field(min_length=1, max_length=200)
     new_password: str = Field(min_length=8, max_length=72)
+class ForgotPasswordRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=200)
+
+
+class ResetPasswordRequest(CamelModel):
+    email: str = Field(min_length=3, max_length=200)
+    otp: str = Field(pattern=r"^\d{6}$")
+    new_password: str = Field(min_length=8, max_length=200)
 
 
 class TicketCreate(CamelModel):

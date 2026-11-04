@@ -21,6 +21,13 @@ CREATE TABLE IF NOT EXISTS password_reset_otps (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS password_reset_codes (
+  user_id    uuid PRIMARY KEY REFERENCES users (id) ON DELETE CASCADE,
+  code_hash  text NOT NULL,
+  expires_at timestamptz NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
 -- Admin persona upgrade (2026-10): widen the role check in place for
 -- databases created before admin existed. Constraint name is the postgres
 -- default for an inline CHECK (users_role_check); IF EXISTS keeps reruns safe.

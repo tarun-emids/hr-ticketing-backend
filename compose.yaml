@@ -25,6 +25,29 @@ services:
       - "127.0.0.1:1025:1025"
     restart: unless-stopped
 
+  demo-init:
+    build:
+      context: .
+    command: ["python", "scripts/initialize_local_demo_passwords.py"]
+    environment:
+      DATABASE_URL: postgresql://hrdesk:local-development-only@db:5432/hrdesk
+      HR_DESK_TEMP_PASSWORD: ${HR_DESK_TEMP_PASSWORD:-ChangeMe123!}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  kb-init:
+    build:
+      context: .
+    command: ["python", "scripts/seed_knowledge_base.py", "--missing-only", "--skip-chunks"]
+    environment:
+      DATABASE_URL: postgresql://hrdesk:local-development-only@db:5432/hrdesk
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
   backend:
     build:
       context: .
@@ -36,9 +59,17 @@ services:
       CORS_ORIGINS: http://localhost:5173,http://127.0.0.1:5173
       TRACE_ENABLED: "false"
       RAG_GEMINI_API_KEY: ${RAG_GEMINI_API_KEY:-}
+      SMTP_HOST: mailpit
+      SMTP_PORT: 1025
     depends_on:
       db:
         condition: service_healthy
+      demo-init:
+        condition: service_completed_successfully
+      kb-init:
+        condition: service_completed_successfully
+      mailpit:
+        condition: service_started
     ports:
       - "127.0.0.1:8000:8000"
     healthcheck:
