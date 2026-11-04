@@ -32,31 +32,72 @@ Use Python 3.14 (the project uses lazy class-body annotations).
 ### Local stack with Docker
 
 From this directory, run `make up` to build and start the API and a local
-PostgreSQL database. The database is initialized from `schema.sql` on first
-startup. The API is available at <http://localhost:8000/docs>. Stop only the
-backend and database with `make down`; PostgreSQL data persists in a Docker
-volume across shutdowns. Start the frontend separately from
-`../hr-ticketing-frontend` with its own `make up`. This stack also starts
-Mailpit at <http://localhost:8025> for local email inspection.
+PostgreSQL database; then run `make migrate` to bring the schema to the
+latest Alembic revision (below). The API is available at
+<http://localhost:8000/docs>. Stop only the backend and database with
+`make down`; PostgreSQL data persists in a Docker volume across shutdowns.
+Start the frontend separately from `../hr-ticketing-frontend` with its own
+`make up`. This stack also starts Mailpit at <http://localhost:8025> for
+local email inspection.
 
 The credentials and signing key used by this local stack are development-only.
 For Gemini assistant access, set `RAG_GEMINI_API_KEY` in this directory's
 `.env` file before starting the backend.
+
+### Schema migrations (Alembic)
+
+The database schema is versioned with Alembic — `alembic.ini` plus
+`migrations/`. Migrations run against the same `DATABASE_URL` the backend
+itself uses: inside the backend container when driven by Make, host-side
+when Alembic is run directly (the URL comes from the environment, from
+backend/.env, or `alembic -x url=...`).
+
+| Task | Command (from this directory) |
+| --- | --- |
+| Apply all pending revisions | `make migrate` |
+| Declare an existing (pre-Alembic) database as current — one-time | `make migrate-stamp` |
+| Start a new empty revision | `make migrate-revision m="add hr_notes to tickets"` |
+| Show applied / current revision | `make migrate` then `docker compose exec backend alembic current` |
+| Emit SQL for review without touching the DB | `alembic upgrade head --sql` (offline output) |
+
+Notes:
+
+- **No autogenerate.** Repositories are raw psycopg SQL; there are no ORM
+  models, so revisions are written by hand: minimal, reversible DDL
+  (upgrade AND downgrade), then `make migrate`.
+- **`op.execute()` is the tool**: PostgreSQL DDL is richer than SQLAlchemy's
+  expression language — write raw SQL in revisions (one statement per
+  `op.execute`, tables before their triggers/indexes).
+- `revision 0001` is a faithful port of schema.sql's DDL (same tables,
+  constraints, index/trigger names, same creation order). Its repair
+  history (`.hr@` renames, duplicate-account collapse, role-check widening)
+  is intentionally excluded — new databases start at the clean end-state;
+  a database old enough to need old repairs has already been through them.
+- **Personas/seed data live outside migrations**: `scripts/provision_users.py`,
+  `scripts/seed_knowledge_base.py` and `scripts/seed_demo_data.py` remain the
+  data owners.
+- `schema.sql` stays in the repository as an emergency hand-applied
+  bootstrap and as the reference for revision 0001; the compose db service
+  no longer auto-applies it on first startup.
 
 ### External PostgreSQL or host-based setup
 
 1. Create a PostgreSQL database and a dedicated application role. Grant it
    access to the database and schema; the backend does not require Supabase,
    PostgREST, GoTrue, or Supabase Storage.
-2. From the repository root, apply [`schema.sql`](./schema.sql):
+2. From the repository root, create the schema with Alembic:
 
    ```bash
-   psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f schema.sql
+   alembic upgrade head    # URL from DATABASE_URL/.env; -x url=… to override
    ```
 
-   This idempotently creates the application tables (including PostgreSQL
-   storage for attachments and knowledge-base PDFs), indexes, triggers, and
-   seven demo users.
+   This creates the application tables (including PostgreSQL storage for
+   attachments and knowledge-base PDFs), indexes, and triggers.
+   [`schema.sql`](./schema.sql) is retained in the repository as an
+   emergency hand-applied bootstrap:
+   `psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f schema.sql` produces the
+   same structure; for databases this creates, run `alembic stamp head`
+   afterwards so Alembic picks up at the current revision.
 3. Create `.env` from `.env.example`. Configure a PostgreSQL connection URL and
    a persistent attachment signing key:
 
@@ -104,7 +145,7 @@ the same viewer/role gate as the metadata endpoints. To load the 30
 pre-rendered documents (data lives in `scripts/knowledge_base_pdfs/`):
 
 ```bash
-# schema.sql (run once, above) creates the kb_documents table
+# revision 0001 (applied above) creates the kb_documents table
 python scripts/seed_knowledge_base.py --dry-run   # plan only
 python scripts/seed_knowledge_base.py             # upsert all 30 by slug
 python scripts/seed_knowledge_base.py --only leave
@@ -171,7 +212,9 @@ curl -X POST http://localhost:8000/api/assistant/ask \
 Supabase's relational tables are PostgreSQL tables and can be exported with
 `pg_dump`. For a new, empty target database:
 
-1. Apply this repository's `schema.sql` to the target.
+1. Create the schema on the target with Alembic (`alembic upgrade head`,
+   or `schema.sql` + a follow-up `alembic stamp head` for a hand-applied
+   bootstrap).
 2. Truncate the seeded rows in the target before importing:
 
    ```sql
@@ -288,5 +331,6 @@ cooldown use `CIRCUIT_BREAKER_FAILURE_THRESHOLD` and
 ruff format .
 ruff check .
 pytest
-pytest -m integration       # requires DATABASE_URL and schema.sql
+pytest -m integration       # requires DATABASE_URL and a migrated schema
+                            # (alembic upgrade head, or schema.sql + stamp)
 ```

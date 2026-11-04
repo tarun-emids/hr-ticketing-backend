@@ -7,7 +7,9 @@ services:
       POSTGRES_PASSWORD: local-development-only
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./schema.sql:/docker-entrypoint-initdb.d/001-schema.sql:ro
+    # NOTE: schema.sql is intentionally NOT mounted into
+    # /docker-entrypoint-initdb.d any more — Alembic owns the schema now
+    # (see README "Schema migrations (Alembic)"; `make migrate` after `make up`).
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U hrdesk -d hrdesk"]
       interval: 5s

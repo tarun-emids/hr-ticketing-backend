@@ -14,6 +14,8 @@ pypdf>=5.0                         # paragraph extraction for admin KB uploads
                                    # delayed until printed policy PDFs are cut)
 httpx>=0.27  # direct import (app/rag Gemini clients)
 bcrypt>=4.1                       # password and OTP hashing
+alembic>=1.13                     # versioned schema migrations (migrations/ + Makefile
+                                  # targets; usage in README "Schema migrations")
 
 # OpenTelemetry: core (api/sdk/exporter) and contrib (instrumentation) release
 # in LOCKSTEP — core 1.28.x pairs with contrib 0.49b0, and every later release
