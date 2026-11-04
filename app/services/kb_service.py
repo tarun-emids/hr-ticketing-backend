@@ -33,6 +33,7 @@ from typing import Optional
 
 from fastapi import HTTPException
 
+from app.cache import TtlCache
 from app.models import kb_doc_out
 from app.repositories.base import UUID_RE
 from app.repositories.kb_repository import KbRepository
@@ -156,9 +157,11 @@ class KbService:
         self,
         kb: KbRepository,
         users: UserRepository,
+        cache: TtlCache,
     ):
         self._kb = kb
         self._users = users
+        self._cache = cache
 
     # -- viewer + gates ------------------------------------------------------
 
@@ -176,7 +179,15 @@ class KbService:
         return pools_for(viewer.get("role"))
 
     def _visible_rows(self, viewer: dict) -> list[dict]:
-        return self._kb.list_by_audiences(self._pools(viewer), limit=POOL_FETCH_LIMIT)
+        pools = tuple(self._pools(viewer))
+        if not pools:
+            return []  # unknown role: nothing is visible, no cache traffic
+        key = ("kb", pools)
+        rows = self._cache.get(key)
+        if rows is None:
+            rows = self._kb.list_by_audiences(pools, limit=POOL_FETCH_LIMIT)
+            self._cache.set(key, rows)
+        return rows
 
     def _doc_or_gate(self, slug: str, viewer: dict) -> dict:
         """404 unknown slug, 403 known-but-out-of-pool — one gate shared by

@@ -16,6 +16,7 @@ from app.admin.accounts import AdminAccountService
 from app.admin.analytics_service import AdminAnalyticsService
 from app.admin.kb_docs import AdminKbDocService
 from app.admin.repository import AdminRepository
+from app.cache import TtlCache
 from app.rag.repository import RagRepository
 from app.rag.service import RagService
 from app.repositories.attachment_storage import AttachmentStorageRepository
@@ -38,6 +39,11 @@ from app.services.user_service import UserService
 def get_database():
     """Shared PostgreSQL connection pool."""
     return app_config.get_database()
+
+
+def get_kb_cache() -> TtlCache:
+    """Shared knowledge base metadata cache."""
+    return app_config.get_kb_cache()
 
 
 # -- repositories ---------------------------------------------------------
@@ -123,8 +129,9 @@ def get_log_ingest_service() -> LogIngestService:
 def get_kb_service(
     kb: KbRepository = Depends(get_kb_repo),
     users: UserRepository = Depends(get_user_repo),
+    cache: TtlCache = Depends(get_kb_cache),
 ) -> KbService:
-    return KbService(kb, users)
+    return KbService(kb, users, cache)
 
 
 def get_feedback_service(
@@ -165,8 +172,9 @@ def get_admin_account_service(
 
 def get_admin_kb_service(
     repo: AdminRepository = Depends(get_admin_repo),
+    cache: TtlCache = Depends(get_kb_cache),
 ) -> AdminKbDocService:
-    return AdminKbDocService(repo)
+    return AdminKbDocService(repo, cache)
 
 
 def get_admin_analytics_service(

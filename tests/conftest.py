@@ -15,6 +15,20 @@ from psycopg import OperationalError
 from psycopg import errors as psycopg_errors
 from psycopg.types.json import Jsonb
 
+
+class FakeClock:
+    """A clock under test control: the instance *is* the callable."""
+
+    def __init__(self, start: float = 0.0):
+        self.now = start
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+    def __call__(self) -> float:
+        return self.now
+
+
 os.environ.setdefault("TRACE_ENABLED", "false")
 os.environ.setdefault("LOG_TO_FILE", "false")
 os.environ.setdefault("ATTACHMENT_SIGNING_KEY", "test-only-signing-key-at-least-32-bytes")
@@ -422,6 +436,7 @@ def api(monkeypatch):
     fake.seed()
     monkeypatch.setattr(app_config, "RETRY_MAX_ATTEMPTS", 1)
     monkeypatch.setattr(app_config, "get_database", lambda: fake)
+    app_config.get_kb_cache().clear()
     client = TestClient(app_main.app)
     yield SimpleNamespace(client=client, fake=fake, U=U)
     fake.close()

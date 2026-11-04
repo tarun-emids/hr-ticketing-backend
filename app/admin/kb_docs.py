@@ -21,6 +21,7 @@ from typing import Optional
 from fastapi import HTTPException
 
 from app.admin.repository import AdminRepository
+from app.cache import TtlCache
 from app.rag import settings as rag_settings
 from app.repositories.base import as_uuid
 
@@ -58,8 +59,14 @@ def _total(refs: list[str], prefix: str) -> int:
 
 
 class AdminKbDocService:
-    def __init__(self, repo: AdminRepository):
+    def __init__(self, repo: AdminRepository, cache: TtlCache):
         self._repo = repo
+        self._cache = cache
+
+    def _invalidate(self) -> None:
+        """Invalidate the knowledge-base metadata cache, so the next request
+        will fetch fresh rows from the database."""
+        self._cache.clear()
 
     # -- read ----------------------------------------------------------------------
 
@@ -108,6 +115,7 @@ class AdminKbDocService:
                 "page_count": _pdf_pages(data),
             }
         )
+        self._invalidate()
         self._refresh_chunks(row, data)
         return self._out(self._repo.get_document_meta(slug) or row)
 
@@ -146,11 +154,13 @@ class AdminKbDocService:
         if effective_date is not None:
             patch["effective_date"] = effective_date or None
         self._repo.update_document(slug, patch, data=data)
+        self._invalidate()
         if data:
             merged = {**row, **patch, "file_size": len(data)}
             self._refresh_chunks(merged, data)
         else:
             self._repo.touch_document(slug)
+            self._invalidate()
         return self._out(self._repo.get_document_meta(slug))
 
     # -- delete ----------------------------------------------------------------------
@@ -160,6 +170,7 @@ class AdminKbDocService:
         if not row:
             raise HTTPException(status_code=404, detail="Unknown knowledge-base document")
         self._repo.delete_document(slug)  # chunks cascade (FK ON DELETE CASCADE)
+        self._invalidate()
         return self._out(row)
 
     # -- internals -----------------------------------------------------------------------
