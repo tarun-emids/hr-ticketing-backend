@@ -118,6 +118,11 @@ class SQLitePool:
               role TEXT NOT NULL CHECK (role IN ('employee', 'agent', 'admin')), password_hash TEXT,
               created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+00:00', 'now'))
             );
+            CREATE TABLE password_reset_codes (
+              user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+              code_hash TEXT NOT NULL, expires_at TEXT NOT NULL,
+              created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+00:00', 'now'))
+            );
             CREATE TABLE tickets (
               number INTEGER PRIMARY KEY AUTOINCREMENT,
               id TEXT NOT NULL UNIQUE,

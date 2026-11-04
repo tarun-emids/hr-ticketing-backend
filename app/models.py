@@ -30,6 +30,16 @@ class LoginRequest(BaseModel):
     password: str = Field(min_length=1, max_length=200)
 
 
+class ForgotPasswordRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=200)
+
+
+class ResetPasswordRequest(CamelModel):
+    email: str = Field(min_length=3, max_length=200)
+    otp: str = Field(pattern=r"^\d{6}$")
+    new_password: str = Field(min_length=8, max_length=200)
+
+
 class TicketCreate(CamelModel):
     employee_id: str
     category: Literal["Payroll", "Leave", "Benefits", "Onboarding", "Policy", "Other"]
