@@ -26,7 +26,7 @@ def live():
     )
     users = users_response.json()
     assert isinstance(users, list), "PostgreSQL /api/users returned an invalid response."
-    if len(users) < 7:
+    if len(users) < 6:
         pytest.skip("PostgreSQL users not seeded — run schema.sql first")
 
     employees = [u for u in users if u["role"] == "employee"]
