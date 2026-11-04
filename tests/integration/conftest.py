@@ -10,12 +10,19 @@ from fastapi.testclient import TestClient
 
 from app import config as cfg
 from app.main import app as real_app
+from app.repositories.user_repository import UserRepository
+from app.services.tokens import create_access_token
 
 
 @pytest.fixture()
 def live():
     """Real TestClient with automatic database cleanup."""
-    client = TestClient(real_app)
+    admin = UserRepository(cfg.get_database()).get_by_email_case_insensitive("tomas@acme.com")
+    assert admin, "PostgreSQL admin account is not provisioned."
+    client = TestClient(
+        real_app,
+        headers={"Authorization": f"Bearer {create_access_token(admin)}"},
+    )
 
     health = client.get("/health")
     assert health.status_code == 200

@@ -1,10 +1,12 @@
-"""Password hashing helpers for organisation-provisioned HR Desk accounts."""
+"""Bcrypt password hashing for organisation-managed HR Desk accounts."""
 
 import base64
 import hashlib
 import hmac
-import os
 
+import bcrypt
+
+_BCRYPT_ROUNDS = 12
 _SCRYPT_N = 1 << 14
 _SCRYPT_R = 8
 _SCRYPT_P = 1
@@ -13,18 +15,13 @@ _KEY_BYTES = 32
 
 
 def hash_password(password: str) -> str:
-    salt = os.urandom(_SALT_BYTES)
-    digest = hashlib.scrypt(
-        password.encode(), salt=salt, n=_SCRYPT_N, r=_SCRYPT_R, p=_SCRYPT_P, dklen=_KEY_BYTES
-    )
-
-    def encode(value: bytes) -> str:
-        return base64.urlsafe_b64encode(value).decode().rstrip("=")
-
-    return f"scrypt${_SCRYPT_N}${_SCRYPT_R}${_SCRYPT_P}${encode(salt)}${encode(digest)}"
+    encoded = password.encode("utf-8")
+    if not encoded or len(encoded) > 72:
+        raise ValueError("Password must contain between 1 and 72 UTF-8 bytes.")
+    return bcrypt.hashpw(encoded, bcrypt.gensalt(rounds=_BCRYPT_ROUNDS)).decode("ascii")
 
 
-def verify_password(password: str, encoded: str) -> bool:
+def _verify_scrypt(password: str, encoded: str) -> bool:
     try:
         algorithm, raw_n, raw_r, raw_p, raw_salt, raw_digest = encoded.split("$", 5)
         if (
@@ -48,3 +45,14 @@ def verify_password(password: str, encoded: str) -> bool:
         password.encode(), salt=salt, n=_SCRYPT_N, r=_SCRYPT_R, p=_SCRYPT_P, dklen=_KEY_BYTES
     )
     return hmac.compare_digest(actual, expected)
+
+
+def verify_password(password: str, encoded: str) -> bool:
+    if not encoded:
+        return False
+    if encoded.startswith("scrypt$"):
+        return _verify_scrypt(password, encoded)
+    try:
+        return bcrypt.checkpw(password.encode("utf-8"), encoded.encode("ascii"))
+    except (AttributeError, ValueError, UnicodeEncodeError):
+        return False

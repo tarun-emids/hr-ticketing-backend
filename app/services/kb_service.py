@@ -3,9 +3,7 @@
 Design (carried from the original full-stack implementation, evolved):
 
 - The viewer's role is ALWAYS resolved server-side from public.users — the
-  client only sends `viewerId`, which is the same mock-auth stand-in the
-  notifications endpoints use until real JWT auth lands. Editing query
-  params can therefore never widen what a browser sees.
+  client sends `viewerId`; resolve the account row and gate access by role.
 - Visibility pools:
       employee -> employee-facing policies
       agent    -> employee + hr pools (HR also answers employee questions,
@@ -163,8 +161,7 @@ class KbService:
     # -- viewer + gates ------------------------------------------------------
 
     def _viewer(self, viewer_id: Optional[str]) -> dict:
-        """Resolve viewerId to a real account row (mock-auth stand-in; the
-        role that comes back is the ONLY trust anchor for visibility)."""
+        """Resolve viewerId to a real account row; its role gates visibility."""
         if not viewer_id or not UUID_RE.match(viewer_id):
             raise HTTPException(status_code=422, detail="viewerId (uuid) is required")
         viewer = self._users.get_by_id(viewer_id)

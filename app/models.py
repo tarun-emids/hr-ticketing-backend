@@ -30,6 +30,21 @@ class LoginRequest(BaseModel):
     password: str = Field(min_length=1, max_length=200)
 
 
+class PasswordResetRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=200)
+
+
+class PasswordResetComplete(CamelModel):
+    email: str = Field(min_length=3, max_length=200)
+    otp: str = Field(pattern=r"^\d{6}$")
+    new_password: str = Field(min_length=8, max_length=72)
+
+
+class PasswordChange(CamelModel):
+    current_password: str = Field(min_length=1, max_length=200)
+    new_password: str = Field(min_length=8, max_length=72)
+
+
 class TicketCreate(CamelModel):
     employee_id: str
     category: Literal["Payroll", "Leave", "Benefits", "Onboarding", "Policy", "Other"]
@@ -65,7 +80,7 @@ class ReplyCreate(CamelModel):
 
 
 class NotificationRead(CamelModel):
-    """Acting user for notification reads (mock-auth stand-in for a token)."""
+    """Acting user identifier for notification reads."""
 
     user_id: str
 
@@ -139,12 +154,12 @@ class AssistantQuestion(CamelModel):
 
 
 class AccountCreate(CamelModel):
-    """New account via the admin console (scrypt-hashed server-side)."""
+    """New account via the admin console (bcrypt-hashed server-side)."""
 
     name: str = Field(min_length=2, max_length=120)
     email: str = Field(min_length=5, max_length=200)
     role: Literal["employee", "agent", "admin"]
-    password: str = Field(min_length=8, max_length=200)
+    password: str = Field(min_length=8, max_length=72)
 
 
 class AccountRoleUpdate(CamelModel):

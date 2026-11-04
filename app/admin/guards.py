@@ -1,11 +1,8 @@
-"""Admin authorization rules (shared by every admin controller endpoint).
+"""Account/role rules shared by admin analytics services.
 
-The app has no bearer tokens today; its trust anchor — everywhere — is the
-account row resolved server-side from an id the client passes. These guards
-apply the SAME anchor to privileged operations:
+HTTP controllers authenticate bearer tokens and resolve the account from
+PostgreSQL. These service-level guards additionally enforce:
 
-- `require_admin(users, actor_id)`: the acting account must exist AND carry
-  the admin role, else 404/403. Mutations never trust a client-side claim.
 - `require_self_or_admin(users, actor_id, target_id)`: agents may pull only
   their own performance; admins may pull anyone's.
 

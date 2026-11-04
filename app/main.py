@@ -24,7 +24,7 @@ Docs at http://localhost:8000/docs
 import asyncio
 from contextlib import asynccontextmanager, suppress
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -40,6 +40,7 @@ from app.controllers import (
     tickets,
     users,
 )
+from app.deps import get_current_account
 from app.observability import (
     RequestLogMiddleware,
     flow_event,
@@ -132,17 +133,18 @@ app.add_middleware(RequestLogMiddleware)
 
 # /api mount: frontend will call e.g. http://localhost:8000/api/tickets
 app.include_router(auth.router, prefix="/api")
-app.include_router(tickets.router, prefix="/api")
-app.include_router(attachments.router, prefix="/api")
-app.include_router(drafts.router, prefix="/api")
-app.include_router(notifications.router, prefix="/api")
-app.include_router(users.router, prefix="/api")
+_authenticated_api = [Depends(get_current_account)]
+app.include_router(tickets.router, prefix="/api", dependencies=_authenticated_api)
+app.include_router(attachments.router, prefix="/api", dependencies=_authenticated_api)
+app.include_router(drafts.router, prefix="/api", dependencies=_authenticated_api)
+app.include_router(notifications.router, prefix="/api", dependencies=_authenticated_api)
+app.include_router(users.router, prefix="/api", dependencies=_authenticated_api)
 # frontend log events → the same backend/logs/app.log backend records use
-app.include_router(logs.router, prefix="/api")
+app.include_router(logs.router, prefix="/api", dependencies=_authenticated_api)
 # knowledge base (policy library: search, metadata, streamed policy PDFs)
-app.include_router(knowledge_base.router, prefix="/api")
+app.include_router(knowledge_base.router, prefix="/api", dependencies=_authenticated_api)
 # HR assistant (RAG over the knowledge base, app/rag/)
-app.include_router(assistant.router, prefix="/api")
+app.include_router(assistant.router, prefix="/api", dependencies=_authenticated_api)
 # admin console (accounts, KB documents, analytics — app/admin/)
 app.include_router(admin.router, prefix="/api")
 
