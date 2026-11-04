@@ -13,7 +13,7 @@ integration tests (`-m integration`) use PostgreSQL configured by `DATABASE_URL`
   three tickets (TKT-101..103) mirroring `store.js`.
 - Direct SQL snapshots in individual tests should use `api.fake.execute()`;
   endpoint behavior should go through `api.client`.
-- Authentication tests use real scrypt hashing helpers but no database or
+- Authentication tests use real bcrypt hashing helpers but no database or
   network. The API fixture itself leaves password hashes unprovisioned.
 
 ## Rules

@@ -14,6 +14,13 @@ load_dotenv(BASE_DIR / ".env")
 
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 ATTACHMENT_SIGNING_KEY = os.getenv("ATTACHMENT_SIGNING_KEY", "")
+AUTH_SIGNING_KEY = os.getenv("AUTH_SIGNING_KEY", "")
+AUTH_TOKEN_TTL_SECONDS = int(os.getenv("AUTH_TOKEN_TTL_SECONDS", "3600"))
+PASSWORD_RESET_OTP_TTL_SECONDS = int(os.getenv("PASSWORD_RESET_OTP_TTL_SECONDS", "600"))
+MAILPIT_HOST = os.getenv("MAILPIT_HOST", "127.0.0.1")
+MAILPIT_PORT = int(os.getenv("MAILPIT_PORT", "1025"))
+MAILPIT_FROM = os.getenv("MAILPIT_FROM", "noreply@hrdesk.local")
+MAILPIT_TIMEOUT_SECONDS = float(os.getenv("MAILPIT_TIMEOUT_SECONDS", "5"))
 CORS_ORIGINS = [
     origin.strip()
     for origin in os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",")

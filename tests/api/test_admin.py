@@ -11,7 +11,14 @@ import uuid as uuidlib
 
 import pytest
 
+from app.services.passwords import verify_password
+from app.services.tokens import create_access_token
 from tests.conftest import U
+
+
+def _auth_headers(api, user_id):
+    row = api.fake.execute("SELECT id, auth_version FROM users WHERE id = %s", (user_id,))[0]
+    return {"Authorization": f"Bearer {create_access_token(dict(row))}"}
 
 
 def _actor(fake, name, email, role):
@@ -43,15 +50,17 @@ def agent_id(api):
 
 
 def test_admin_endpoints_reject_unknown_and_non_admin_actors(api, admin_id):
-    # unknown actor (nonexistent uuid)
-    r = api.client.get("/api/admin/accounts", params={"actorId": str(uuidlib.uuid4())})
-    assert r.status_code == 404
-    # valid account, wrong role (the harness employee)
-    r = api.client.get("/api/admin/accounts", params={"actorId": U["priya"]})
+    r = api.client.get("/api/admin/accounts", headers={"Authorization": ""})
+    assert r.status_code == 401
+    r = api.client.get(
+        "/api/admin/accounts",
+        headers=_auth_headers(api, U["priya"]),
+        params={"actorId": admin_id},
+    )
     assert r.status_code == 403
     r = api.client.post(
         "/api/admin/accounts",
-        params={"actorId": U["priya"]},
+        headers=_auth_headers(api, U["priya"]),
         json={"name": "Xavier", "email": "x@y.com", "role": "agent", "password": "12345678"},
     )
     assert r.status_code == 403
@@ -63,7 +72,7 @@ def test_admin_endpoints_reject_unknown_and_non_admin_actors(api, admin_id):
 def test_create_account_promote_delete_lifecycle(api, admin_id):
     r = api.client.post(
         "/api/admin/accounts",
-        params={"actorId": admin_id},
+        headers=_auth_headers(api, admin_id),
         json={
             "name": "Nina Nunes",
             "email": "nina@acme.com",
@@ -74,11 +83,17 @@ def test_create_account_promote_delete_lifecycle(api, admin_id):
     assert r.status_code == 201
     created = r.json()
     assert created["role"] == "agent"
+    assert "password_hash" not in created
+    stored = api.fake.execute("SELECT password_hash FROM users WHERE id = %s", (created["id"],))[0][
+        "password_hash"
+    ]
+    assert stored.startswith("$2")
+    assert verify_password("Password!2026", stored)
 
     # duplicate (case-insensitive) creation is refused
     r = api.client.post(
         "/api/admin/accounts",
-        params={"actorId": admin_id},
+        headers=_auth_headers(api, admin_id),
         json={
             "name": "Nina Again",
             "email": "NINA@ACME.com",
@@ -91,19 +106,23 @@ def test_create_account_promote_delete_lifecycle(api, admin_id):
     # role change employee <-> agent <-> admin
     r = api.client.patch(
         f"/api/admin/accounts/{created['id']}/role",
-        params={"actorId": admin_id},
+        headers=_auth_headers(api, admin_id),
         json={"role": "admin"},
     )
     assert r.status_code == 200 and r.json()["role"] == "admin"
 
     # deletion of a clean account works
-    r = api.client.delete(f"/api/admin/accounts/{created['id']}", params={"actorId": admin_id})
+    r = api.client.delete(
+        f"/api/admin/accounts/{created['id']}", headers=_auth_headers(api, admin_id)
+    )
     assert r.status_code == 200
 
 
 def test_delete_never_destroys_history(api, admin_id):
     # the harness employee Marcus owns a ticket — deleting him is refused
-    r = api.client.delete(f"/api/admin/accounts/{U['marcus']}", params={"actorId": admin_id})
+    r = api.client.delete(
+        f"/api/admin/accounts/{U['marcus']}", headers=_auth_headers(api, admin_id)
+    )
     assert r.status_code == 409
     assert "ticket" in r.json()["detail"].lower()
 
@@ -112,7 +131,7 @@ def test_demoting_an_agent_with_open_tickets_is_refused(api, admin_id):
     # TKT-102 belongs to Alicia and is open ("In Progress") in the harness
     r = api.client.patch(
         f"/api/admin/accounts/{U['alicia']}/role",
-        params={"actorId": admin_id},
+        headers=_auth_headers(api, admin_id),
         json={"role": "employee"},
     )
     assert r.status_code == 409
@@ -120,12 +139,12 @@ def test_demoting_an_agent_with_open_tickets_is_refused(api, admin_id):
 
 
 def test_last_admin_is_protected(api, admin_id):
-    r = api.client.delete(f"/api/admin/accounts/{admin_id}", params={"actorId": admin_id})
+    r = api.client.delete(f"/api/admin/accounts/{admin_id}", headers=_auth_headers(api, admin_id))
     assert r.status_code == 409
     assert "only admin" in r.json()["detail"].lower()
     r = api.client.patch(
         f"/api/admin/accounts/{admin_id}/role",
-        params={"actorId": admin_id},
+        headers=_auth_headers(api, admin_id),
         json={"role": "agent"},
     )
     assert r.status_code == 409
@@ -147,7 +166,7 @@ def _upload(api, admin_id, filename="new-leave-policy.pdf", **over):
     form.update(over)
     return api.client.post(
         "/api/admin/kb/documents",
-        params={"actorId": admin_id},
+        headers=_auth_headers(api, admin_id),
         files={"file": (filename, b"%PDF-1.4 uploaded-bytes", "application/pdf")},
         data=form,
     )
@@ -161,7 +180,7 @@ def test_kb_document_upload_lists_edits_and_deletes(api, admin_id):
     assert doc["ref"].startswith("KB-EMPLOYEE-")  # employee audience pool
     assert doc["fileSize"] == len(b"%PDF-1.4 uploaded-bytes")
 
-    r = api.client.get("/api/admin/kb/documents", params={"actorId": admin_id})
+    r = api.client.get("/api/admin/kb/documents", headers=_auth_headers(api, admin_id))
     assert r.status_code == 200
     titles = [d["title"] for d in r.json()]
     assert "New Leave Policy" in titles
@@ -169,14 +188,16 @@ def test_kb_document_upload_lists_edits_and_deletes(api, admin_id):
     # metadata edit without touching the PDF
     r = api.client.patch(
         f"/api/admin/kb/documents/{doc['slug']}",
-        params={"actorId": admin_id},
+        headers=_auth_headers(api, admin_id),
         data={"title": "New Leave Policy (2026 update)"},
     )
     assert r.status_code == 200
     assert r.json()["title"].endswith("(2026 update)")
 
     # delete removes both the document (chunks cascade)
-    r = api.client.delete(f"/api/admin/kb/documents/{doc['slug']}", params={"actorId": admin_id})
+    r = api.client.delete(
+        f"/api/admin/kb/documents/{doc['slug']}", headers=_auth_headers(api, admin_id)
+    )
     assert r.status_code == 200
     rows = api.fake.execute("SELECT count(*) AS n FROM kb_documents", ())
     assert rows[0]["n"] == 5  # back to the 5 harness documents
@@ -189,7 +210,7 @@ def test_kb_document_upload_lists_edits_and_deletes(api, admin_id):
 def test_kb_upload_without_pdf_bytes_is_422(api, admin_id):
     r = api.client.post(
         "/api/admin/kb/documents",
-        params={"actorId": admin_id},
+        headers=_auth_headers(api, admin_id),
         files={"file": ("notes.txt", b"plain text", "text/plain")},
         data={"title": "Not a PDF", "audience": "employee"},
     )
@@ -202,7 +223,8 @@ def test_kb_upload_without_pdf_bytes_is_422(api, admin_id):
 def test_overview_counts_categories_and_repetition(api, admin_id):
     r = api.client.get(
         "/api/admin/analytics/overview",
-        params={"actorId": admin_id, "window": "all"},
+        headers=_auth_headers(api, admin_id),
+        params={"window": "all"},
     )
     assert r.status_code == 200
     body = r.json()
@@ -214,15 +236,25 @@ def test_overview_counts_categories_and_repetition(api, admin_id):
 
 def test_bad_window_and_period_answer_422(api, admin_id):
     r = api.client.get(
-        "/api/admin/analytics/overview", params={"actorId": admin_id, "window": "fortnight"}
+        "/api/admin/analytics/overview",
+        headers=_auth_headers(api, admin_id),
+        params={"window": "fortnight"},
     )
     assert r.status_code == 422
-    r = api.client.get("/api/admin/analytics/agents", params={"actorId": admin_id, "period": "8d"})
+    r = api.client.get(
+        "/api/admin/analytics/agents",
+        headers=_auth_headers(api, admin_id),
+        params={"period": "8d"},
+    )
     assert r.status_code == 422
 
 
 def test_leaderboard_ranks_by_resolved(api, admin_id):
-    r = api.client.get("/api/admin/analytics/agents", params={"actorId": admin_id, "period": "30d"})
+    r = api.client.get(
+        "/api/admin/analytics/agents",
+        headers=_auth_headers(api, admin_id),
+        params={"period": "30d"},
+    )
     assert r.status_code == 200
     table = r.json()
     by_id = {m["agentId"]: m for m in table}
@@ -239,7 +271,8 @@ def test_agent_drilldown_self_ok_other_forbidden(api, agent_id, admin_id):
     # the agent may read their own numbers (powering the HR personal view)
     r = api.client.get(
         f"/api/admin/metrics/agents/{agent_id}",
-        params={"actorId": agent_id, "period": "30d"},
+        headers=_auth_headers(api, agent_id),
+        params={"period": "30d"},
     )
     assert r.status_code == 200
     body = r.json()
@@ -248,15 +281,17 @@ def test_agent_drilldown_self_ok_other_forbidden(api, agent_id, admin_id):
 
     # ...but may NOT read anyone else's
     r = api.client.get(
-        f"/api/admin/metrics/agents/{agent_id}",
-        params={"actorId": U["ben"], "period": "30d"},
+        f"/api/admin/metrics/agents/{U['ben']}",
+        headers=_auth_headers(api, U["alicia"]),
+        params={"period": "30d"},
     )
     assert r.status_code == 403
 
     # metrics apply to agents only
     r = api.client.get(
         f"/api/admin/metrics/agents/{U['priya']}",
-        params={"actorId": admin_id, "period": "30d"},
+        headers=_auth_headers(api, admin_id),
+        params={"period": "30d"},
     )
     assert r.status_code == 422
 
@@ -283,7 +318,9 @@ def test_agent_chunk_rows_feed_the_assistant_gate(api, admin_id):
             json.dumps([0.1, 0.2]),
         ),
     )
-    r = api.client.delete("/api/admin/kb/documents/leave-policy", params={"actorId": admin_id})
+    r = api.client.delete(
+        "/api/admin/kb/documents/leave-policy", headers=_auth_headers(api, admin_id)
+    )
     assert r.status_code == 200
     rows = api.fake.execute(
         "SELECT count(*) AS n FROM kb_document_chunks WHERE document_slug=%s", ("leave-policy",)

@@ -5,8 +5,13 @@ Login observability includes no email, password, or credential material.
 
 from fastapi import APIRouter, Depends
 
-from app.deps import get_auth_service
-from app.models import ForgotPasswordRequest, LoginRequest, ResetPasswordRequest
+from app.deps import get_auth_service_with_reset, get_current_account
+from app.models import (
+    LoginRequest,
+    PasswordChange,
+    PasswordResetComplete,
+    PasswordResetRequest,
+)
 from app.observability import flow_operation
 from app.services.auth_service import AuthService
 
@@ -14,7 +19,7 @@ router = APIRouter(tags=["auth"])
 
 
 @router.post("/auth/login")
-def login(payload: LoginRequest, svc: AuthService = Depends(get_auth_service)):
+def login(payload: LoginRequest, svc: AuthService = Depends(get_auth_service_with_reset)):
     """POST /api/auth/login — verify credentials and return the app user."""
     with flow_operation(
         "auth.login",
@@ -27,31 +32,30 @@ def login(payload: LoginRequest, svc: AuthService = Depends(get_auth_service)):
         return result
 
 
-@router.post("/auth/forgot-password")
+@router.post("/auth/forgot-password", status_code=202)
 def forgot_password(
-    payload: ForgotPasswordRequest,
-    svc: AuthService = Depends(get_auth_service),
+    payload: PasswordResetRequest,
+    svc: AuthService = Depends(get_auth_service_with_reset),
 ):
-    """Request a time-limited password reset code by email."""
-    with flow_operation(
-        "auth.password_reset.request",
-        operation="auth.password_reset.request",
-        method="POST",
-        path="/api/auth/forgot-password",
-    ):
-        return svc.request_password_reset(payload.email)
+    """Send an OTP via Mailpit without confirming whether an account exists."""
+    svc.request_password_reset(payload.email)
+    return {"message": "If an account exists, a reset code has been sent."}
 
 
 @router.post("/auth/reset-password")
 def reset_password(
-    payload: ResetPasswordRequest,
-    svc: AuthService = Depends(get_auth_service),
+    payload: PasswordResetComplete,
+    svc: AuthService = Depends(get_auth_service_with_reset),
 ):
-    """Set a new password with a valid one-time reset code."""
-    with flow_operation(
-        "auth.password_reset.complete",
-        operation="auth.password_reset.complete",
-        method="POST",
-        path="/api/auth/reset-password",
-    ):
-        return svc.reset_password(payload.email, payload.otp, payload.new_password)
+    svc.reset_password(payload.email, payload.otp, payload.new_password)
+    return {"message": "Password reset successfully. Please sign in again."}
+
+
+@router.post("/auth/password")
+def change_password(
+    payload: PasswordChange,
+    account: dict = Depends(get_current_account),
+    svc: AuthService = Depends(get_auth_service_with_reset),
+):
+    svc.change_password(account, payload.current_password, payload.new_password)
+    return {"message": "Password changed successfully. Please sign in again."}

@@ -7,7 +7,9 @@ services:
       POSTGRES_PASSWORD: local-development-only
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./schema.sql:/docker-entrypoint-initdb.d/001-schema.sql:ro
+    # NOTE: schema.sql is intentionally NOT mounted into
+    # /docker-entrypoint-initdb.d any more — Alembic owns the schema now
+    # (see README "Schema migrations (Alembic)"; `make migrate` after `make up`).
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U hrdesk -d hrdesk"]
       interval: 5s
@@ -52,6 +54,8 @@ services:
     environment:
       DATABASE_URL: postgresql://hrdesk:local-development-only@db:5432/hrdesk
       ATTACHMENT_SIGNING_KEY: local-development-only-change-before-production
+      AUTH_SIGNING_KEY: local-development-only-change-before-production
+      MAILPIT_HOST: mailpit
       CORS_ORIGINS: http://localhost:5173,http://127.0.0.1:5173
       TRACE_ENABLED: "false"
       RAG_GEMINI_API_KEY: ${RAG_GEMINI_API_KEY:-}

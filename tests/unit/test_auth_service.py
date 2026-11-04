@@ -15,6 +15,7 @@ def test_password_hashes_verify_without_storing_plaintext():
     assert verify_password(password, encoded)
     assert not verify_password("different-password", encoded)
     assert not verify_password(password, "invalid-hash")
+    assert encoded.startswith("$2")
 
 
 def test_login_returns_public_user_without_password_hash():
@@ -33,9 +34,10 @@ def test_login_returns_public_user_without_password_hash():
             return user
 
     response = AuthService(Users()).login(" ADA@example.com ", "a-long-provisioned-password")
-    assert response == {
-        "user": {key: value for key, value in user.items() if key != "password_hash"}
-    }
+    assert response["user"] == {key: value for key, value in user.items() if key != "password_hash"}
+    assert response["accessToken"]
+    assert response["tokenType"] == "bearer"
+    assert response["expiresIn"] > 0
 
 
 @pytest.mark.parametrize(

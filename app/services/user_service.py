@@ -12,8 +12,19 @@ class UserService:
         self._users = users
 
     def list_users(self) -> list[dict]:
-        """Employees first, then agents (each group newest-account-last)."""
-        ordered = self._users.list_by_role("employee") + self._users.list_by_role("agent")
+        """Employees first, then agents, then admins (each group
+        newest-account-last).
+
+        Admins MUST be included: after sign-in the frontend re-checks the
+        signed-in account against this directory and drops the session when
+        the id is missing — an admin absent from the list would be signed
+        out automatically right after a successful login.
+        """
+        ordered = (
+            self._users.list_by_role("employee")
+            + self._users.list_by_role("agent")
+            + self._users.list_by_role("admin")
+        )
         return [user_out(u) for u in ordered]
 
     def list_agents(self) -> list[dict]:

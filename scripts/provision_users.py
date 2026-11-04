@@ -92,6 +92,9 @@ def main() -> int:
     if len(password) < 12:
         print("Password must be at least 12 characters.", file=sys.stderr)
         return 2
+    if len(password.encode("utf-8")) > 72:
+        print("Password must be at most 72 UTF-8 bytes for bcrypt.", file=sys.stderr)
+        return 2
 
     users = UserRepository(get_database())
     admin_repo = AdminRepository(get_database())

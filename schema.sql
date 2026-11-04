@@ -6,10 +6,20 @@ CREATE TABLE IF NOT EXISTS users (
   email         text NOT NULL UNIQUE,
   role          text NOT NULL CHECK (role IN ('employee', 'agent', 'admin')),
   password_hash text,
+  auth_version  integer NOT NULL DEFAULT 0,
   created_at    timestamptz NOT NULL DEFAULT now()
 );
 
 ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash text;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS auth_version integer NOT NULL DEFAULT 0;
+
+CREATE TABLE IF NOT EXISTS password_reset_otps (
+  user_id    uuid PRIMARY KEY REFERENCES users (id) ON DELETE CASCADE,
+  otp_hash   text NOT NULL,
+  expires_at timestamptz NOT NULL,
+  attempts   integer NOT NULL DEFAULT 0 CHECK (attempts BETWEEN 0 AND 5),
+  created_at timestamptz NOT NULL DEFAULT now()
+);
 
 CREATE TABLE IF NOT EXISTS password_reset_codes (
   user_id    uuid PRIMARY KEY REFERENCES users (id) ON DELETE CASCADE,
