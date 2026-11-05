@@ -12,7 +12,22 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 from psycopg import OperationalError
+from psycopg import errors as psycopg_errors
 from psycopg.types.json import Jsonb
+
+
+class FakeClock:
+    """A clock under test control: the instance *is* the callable."""
+
+    def __init__(self, start: float = 0.0):
+        self.now = start
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+    def __call__(self) -> float:
+        return self.now
+
 
 os.environ.setdefault("TRACE_ENABLED", "false")
 os.environ.setdefault("LOG_TO_FILE", "false")
@@ -76,7 +91,10 @@ class _Connection:
         sql = sql.replace(" ILIKE ", " LIKE ")
         sql = sql.replace("TRUE", "1").replace("FALSE", "0")
         params = tuple(str(value) if isinstance(value, uuidlib.UUID) else value for value in params)
-        cursor = self._pool._connection.execute(sql, params)
+        try:
+            cursor = self._pool._connection.execute(sql, params)
+        except sqlite3.IntegrityError as exc:
+            raise psycopg_errors.UniqueViolation(str(exc)) from exc
         return _Cursor(cursor)
 
 
@@ -200,6 +218,19 @@ class SQLitePool:
             CREATE TRIGGER drafts_updated AFTER UPDATE ON ticket_drafts
               WHEN NEW.updated_at = OLD.updated_at BEGIN
                 UPDATE ticket_drafts SET updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00', 'now')
+                WHERE id = NEW.id;
+              END;
+            CREATE TABLE feedback (
+              id TEXT PRIMARY KEY, ticket_id TEXT NOT NULL UNIQUE REFERENCES tickets(id) ON DELETE CASCADE,
+              employee_id TEXT NOT NULL REFERENCES users(id),
+              rating INTEGER NOT NULL CHECK (rating BETWEEN 1 AND 5),
+              comment TEXT NOT NULL DEFAULT '' CHECK (length(comment) <= 2000),
+              created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+00:00', 'now')),
+              updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+00:00', 'now'))
+              );
+            CREATE TRIGGER feedback_updated AFTER UPDATE ON feedback
+              WHEN NEW.updated_at = OLD.updated_at BEGIN
+                UPDATE feedback SET updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00', 'now')
                 WHERE id = NEW.id;
               END;
             """
@@ -410,6 +441,7 @@ def api(monkeypatch):
     fake.seed()
     monkeypatch.setattr(app_config, "RETRY_MAX_ATTEMPTS", 1)
     monkeypatch.setattr(app_config, "get_database", lambda: fake)
+    app_config.get_kb_cache().clear()
     client = TestClient(app_main.app)
     yield SimpleNamespace(client=client, fake=fake, U=U)
     fake.close()

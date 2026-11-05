@@ -111,7 +111,11 @@ def test_ticket_list_events_never_log_search_text(api, caplog):
     with caplog.at_level(logging.INFO, logger="hrdesk.flow"):
         res = api.client.get(
             "/api/tickets",
-            params={"status": "Resolved", "q": "equipment"},  # matches seeded TKT-103
+            params={
+                "status": "Resolved",
+                "q": "equipment",
+                "viewerId": U["alicia"],
+            },  # matches seeded TKT-103
         )
     assert res.status_code == 200
     events = _flow_records(caplog)
@@ -126,8 +130,8 @@ def test_ticket_list_events_never_log_search_text(api, caplog):
 
 def test_ticket_get_events(api, caplog):
     with caplog.at_level(logging.INFO, logger="hrdesk.flow"):
-        ok = api.client.get("/api/tickets/TKT-102")
-        missing = api.client.get("/api/tickets/TKT-404")
+        ok = api.client.get("/api/tickets/TKT-102", params={"viewerId": U["alicia"]})
+        missing = api.client.get("/api/tickets/TKT-404", params={"viewerId": U["alicia"]})
     assert ok.status_code == 200 and missing.status_code == 404
     events = _flow_records(caplog)
     assert _names(events) == [
@@ -150,7 +154,7 @@ def test_status_update_full_chain(api, caplog):
         res = api.client.patch(
             "/api/tickets/TKT-101/status",
             headers={"X-Request-ID": "appflow-status-0001"},
-            json={"status": "Resolved", "actorId": U["marcus"]},
+            json={"status": "Resolved", "actorId": U["ben"]},
         )
     assert res.status_code == 200
     names = _names(_flow_records(caplog))
@@ -179,6 +183,7 @@ def test_assign_flow_emits_reply_and_update_events(api, caplog):
     with caplog.at_level(logging.INFO, logger="hrdesk.flow"):
         res = api.client.patch(
             "/api/tickets/TKT-101/assignee",
+            params={"viewerId": U["ben"]},
             json={"assigneeId": U["alicia"]},
         )
     assert res.status_code == 200
@@ -203,8 +208,16 @@ def test_assign_flow_emits_reply_and_update_events(api, caplog):
 def test_reassigning_the_same_agent_does_not_notify(api, caplog):
     """Re-picking the current assignee stays quiet (deliver rows absent)."""
     with caplog.at_level(logging.INFO, logger="hrdesk.flow"):
-        first = api.client.patch("/api/tickets/TKT-101/assignee", json={"assigneeId": U["alicia"]})
-        second = api.client.patch("/api/tickets/TKT-101/assignee", json={"assigneeId": U["alicia"]})
+        first = api.client.patch(
+            "/api/tickets/TKT-101/assignee",
+            params={"viewerId": U["ben"]},
+            json={"assigneeId": U["alicia"]},
+        )
+        second = api.client.patch(
+            "/api/tickets/TKT-101/assignee",
+            params={"viewerId": U["ben"]},
+            json={"assigneeId": U["alicia"]},
+        )
     assert first.status_code == 200 and second.status_code == 200
     events = _flow_records(caplog)
     # first PATCH: assign (9 rows incl. reply insert + deliver);
@@ -221,7 +234,7 @@ def test_reassigning_the_same_agent_does_not_notify(api, caplog):
 
 def test_auto_assign_logs_selection_milestone(api, caplog):
     with caplog.at_level(logging.INFO, logger="hrdesk.flow"):
-        res = api.client.post("/api/tickets/TKT-101/auto-assign")
+        res = api.client.post("/api/tickets/TKT-101/auto-assign", params={"viewerId": U["ben"]})
     assert res.status_code == 200
     events = _flow_records(caplog)
     names = _names(events)
@@ -236,7 +249,11 @@ def test_auto_assign_logs_selection_milestone(api, caplog):
 
 def test_priority_update_events(api, caplog):
     with caplog.at_level(logging.INFO, logger="hrdesk.flow"):
-        res = api.client.patch("/api/tickets/TKT-101/priority", json={"priority": "Urgent"})
+        res = api.client.patch(
+            "/api/tickets/TKT-101/priority",
+            params={"viewerId": U["ben"]},
+            json={"priority": "Urgent"},
+        )
     assert res.status_code == 200
     assert _names(_flow_records(caplog)) == [
         "tickets.priority.started",
@@ -248,7 +265,7 @@ def test_priority_update_events(api, caplog):
 
 def test_agents_workload_events(api, caplog):
     with caplog.at_level(logging.INFO, logger="hrdesk.flow"):
-        res = api.client.get("/api/agents/workload")
+        res = api.client.get("/api/agents/workload", params={"viewerId": U["ben"]})
     assert res.status_code == 200
     events = _flow_records(caplog)
     assert _names(events) == ["agents.workload.started", "agents.workload.completed"]
@@ -397,9 +414,10 @@ def test_ticket_attachment_upload_and_url_events(api, caplog):
     with caplog.at_level(logging.INFO, logger="hrdesk.flow"):
         upload = api.client.post(
             "/api/tickets/TKT-102/attachment",
+            params={"viewerId": U["ben"]},
             files={"file": ("employee-payslip.pdf", b"pdf-bytes-here", "application/pdf")},
         )
-        url = api.client.get("/api/tickets/TKT-102/attachment")
+        url = api.client.get("/api/tickets/TKT-102/attachment", params={"viewerId": U["ben"]})
     assert upload.status_code == 200 and url.status_code == 200
     events = _flow_records(caplog)
     names = _names(events)

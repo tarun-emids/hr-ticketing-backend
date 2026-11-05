@@ -34,6 +34,7 @@ from app.controllers import (
     attachments,
     auth,
     drafts,
+    feedback,
     knowledge_base,
     logs,
     notifications,
@@ -141,6 +142,7 @@ app.include_router(users.router, prefix="/api")
 app.include_router(logs.router, prefix="/api")
 # knowledge base (policy library: search, metadata, streamed policy PDFs)
 app.include_router(knowledge_base.router, prefix="/api")
+app.include_router(feedback.router, prefix="/api")
 # HR assistant (RAG over the knowledge base, app/rag/)
 app.include_router(assistant.router, prefix="/api")
 # admin console (accounts, KB documents, analytics — app/admin/)

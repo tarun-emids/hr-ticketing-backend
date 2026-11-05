@@ -225,12 +225,12 @@ need to keep. Back up both the source tables and Storage objects first.
 
 ## API behavior
 
-The API paths and JSON response shapes remain the same:
+response shapes are stable, with two deliberate updates: ticket reads are scoped by the viewer (Phase 1) and `GET api/tickets` returns a paginated envelope (below).
 
 | Frontend operation | Endpoint |
 | --- | --- |
 | Login | `POST /api/auth/login` |
-| Create/list tickets | `POST /api/tickets`, `GET /api/tickets?...` |
+| Create/list tickets | `POST /api/tickets`, `GET /api/tickets?viewerId=...` |
 | Get ticket by reference or UUID | `GET /api/tickets/{TKT-n or uuid}` |
 | Add reply | `POST /api/tickets/{id}/replies` |
 | Update status / assignee / priority / category | `PATCH /api/tickets/{id}/status`, `/assignee`, `/priority`, `/category` |
@@ -240,6 +240,20 @@ The API paths and JSON response shapes remain the same:
 | Notifications | `/api/notifications` |
 | Users and lookup metadata | `GET /api/users`, `/api/users/agents`, `/api/meta` |
 | Knowledge-base catalogue and policy PDFs | `/api/kb`, `/api/kb/{slug}`, `/api/kb/{slug}/file` |
+### GET /tickets
+`viewerId` (required uuid), optional filters `status|category|priority|employeeId|assigneeId|unassigned|q`,
+paging `page` (>=1, default 1) and `pageSize` (1..100, default 25), sorting
+`sort` (updated|created|priority|subject, default updated) and `order` (asc|desc, default desc).
+
+Response is always an envelope:
+{
+  "items": [ticket…], "page": 1, "pageSize": 25, "total": <exact scoped
+  count>, "hasNext": <bool — page*pageSize < total>
+}
+Rows are sorted by the whitelisted expression then `updated_at DESC, number DESC`
+ (tie-broken, stable pages). Row scope = the server-resolved viewer's role
+ (employee: own tickets; agent/admin: all). Legacy array response removed in
+ Phase 2 — consumers must read `items`.
 
 Ticket writes return the full ticket and thread; ticket lists leave `turns`
 empty. Agent replies stamp `firstReplyAt` once and move `Open` tickets to

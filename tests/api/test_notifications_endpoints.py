@@ -85,7 +85,9 @@ def test_agent_reply_notifies_owner_only(api):
 
 def test_assignment_notifies_assignee_only_on_change(api):
     ref = create_employee_ticket(api, U["priya"])["id"]
-    api.client.patch(f"/api/tickets/{ref}/assignee", json={"assigneeId": U["ben"]})
+    api.client.patch(
+        f"/api/tickets/{ref}/assignee", params={"viewerId": U["ben"]}, json={"assigneeId": U["ben"]}
+    )
     assigned = [
         n
         for n in list_for(api, U["ben"])
@@ -94,7 +96,9 @@ def test_assignment_notifies_assignee_only_on_change(api):
     assert len(assigned) == 1
 
     # re-picking the same assignee stays quiet
-    api.client.patch(f"/api/tickets/{ref}/assignee", json={"assigneeId": U["ben"]})
+    api.client.patch(
+        f"/api/tickets/{ref}/assignee", params={"viewerId": U["ben"]}, json={"assigneeId": U["ben"]}
+    )
     assert (
         len(
             [
@@ -107,7 +111,9 @@ def test_assignment_notifies_assignee_only_on_change(api):
     )
 
     # clearing the assignee notifies nobody
-    api.client.patch(f"/api/tickets/{ref}/assignee", json={"assigneeId": None})
+    api.client.patch(
+        f"/api/tickets/{ref}/assignee", params={"viewerId": U["ben"]}, json={"assigneeId": None}
+    )
     assert (
         len(
             [

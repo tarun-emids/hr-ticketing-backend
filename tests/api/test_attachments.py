@@ -3,15 +3,22 @@ import io
 from tests.conftest import U
 
 
+def items(r):
+    """The only legal reading of GET /tickets after legacy removal:
+    paginated envelope -> its items list."""
+    return r.json()["items"]
+
+
 def upload(api, tid, filename="note.pdf", content=b"PDF-ish bytes", content_type="application/pdf"):
     return api.client.post(
         f"/api/tickets/{tid}/attachment",
+        params={"viewerId": U["alicia"]},
         files={"file": (filename, io.BytesIO(content), content_type)},
     )
 
 
 def test_get_attachment_without_attachment_404(api):
-    r = api.client.get("/api/tickets/TKT-101/attachment")
+    r = api.client.get("/api/tickets/TKT-101/attachment", params={"viewerId": U["alicia"]})
     assert r.status_code == 404
 
 
@@ -35,9 +42,9 @@ def test_signed_url_for_stored_attachment(api):
             "description": "My badge stopped working at the lobby reader and HR needs a replacement.",
         },
     )
-    tid = api.client.get("/api/tickets").json()[0]["id"]
+    tid = items(api.client.get("/api/tickets", params={"viewerId": U["alicia"]}))[0]["id"]
     upload(api, tid, content=b"abc")
-    r = api.client.get(f"/api/tickets/{tid}/attachment")
+    r = api.client.get(f"/api/tickets/{tid}/attachment", params={"viewerId": U["alicia"]})
     assert r.status_code == 200
     body = r.json()
     assert body["name"] == "note.pdf"
@@ -48,8 +55,12 @@ def test_signed_url_for_stored_attachment(api):
 
 def test_signed_url_ttl_clamped(api):
     upload(api, "TKT-102")
-    low = api.client.get("/api/tickets/TKT-102/attachment", params={"ttl": 5})
-    high = api.client.get("/api/tickets/TKT-102/attachment", params={"ttl": 999999})
+    low = api.client.get(
+        "/api/tickets/TKT-102/attachment", params={"ttl": 5, "viewerId": U["alicia"]}
+    )
+    high = api.client.get(
+        "/api/tickets/TKT-102/attachment", params={"ttl": 999999, "viewerId": U["alicia"]}
+    )
     assert low.json()["expiresInSeconds"] == 60
     assert high.json()["expiresInSeconds"] == 86400
 
@@ -58,6 +69,7 @@ def test_reupload_replaces_previous_attachment(api):
     upload(api, "TKT-101", content=b"first", filename="one.txt")
     r = api.client.post(
         "/api/tickets/TKT-101/attachment",
+        params={"viewerId": U["alicia"]},
         files={"file": ("two.txt", io.BytesIO(b"second payload"), "text/plain")},
     )
     t = r.json()
@@ -70,7 +82,9 @@ def test_reupload_replaces_previous_attachment(api):
 
 def test_signed_url_downloads_database_attachment(api):
     upload(api, "TKT-101", content=b"private database attachment")
-    url = api.client.get("/api/tickets/TKT-101/attachment").json()["url"]
+    url = api.client.get(
+        "/api/tickets/TKT-101/attachment", params={"viewerId": U["alicia"]}
+    ).json()["url"]
     response = api.client.get(url)
     assert response.status_code == 200
     assert response.content == b"private database attachment"

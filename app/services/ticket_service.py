@@ -30,9 +30,10 @@ from typing import Optional
 
 from fastapi import HTTPException
 
-from app.models import ticket_out
+from app.models import ACTIVE_STATUSES, ticket_out
 from app.observability import flow_event
 from app.repositories.attachment_storage import AttachmentStorageRepository
+from app.repositories.base import UUID_RE, as_uuid
 from app.repositories.ticket_repository import TicketRepository
 from app.repositories.user_repository import UserRepository
 from app.services.notification_service import (
@@ -47,9 +48,10 @@ from app.services.notification_service import (
     status_recipients,
 )
 
-ACTIVE_STATUSES = ("Open", "In Progress", "Waiting on Employee")
-
 AGENT_PICKUP_TEXT = "Thanks for raising this — I've picked it up and will get back to you shortly."
+
+_SORT_KEYS = frozenset({"updated", "created", "priority", "subject", "status", "employee"})
+_ORDER_KEYS = frozenset({"asc", "desc"})
 
 
 class TicketNotFound(HTTPException):
@@ -95,15 +97,66 @@ class TicketService:
             self._tickets.update_ticket(row["id"], patch, operation=operation)
         return self._full(tid)
 
+    def require_viewer(self, viewer_id: Optional[str]) -> dict:
+        """Edge guard for ticket reads: viewerId must resolve to a real
+        account row before any visibility decision. Malformed: 422; unknown:
+        404 (require_account semantics, so 'bad request' and 'no such
+        account' answer differently on purpose)."""
+        if not viewer_id or not isinstance(viewer_id, str) or not UUID_RE.match(viewer_id):
+            raise HTTPException(status_code=422, detail="viewerId (uuid) is required")
+        viewer = self._users.get_by_id(viewer_id)
+        if not viewer:
+            raise HTTPException(status_code=404, detail="Unknown viewer")
+        return viewer
+
+    @staticmethod
+    def _list_scope(viewer: dict) -> Optional[uuidlib.UUID]:
+        """Mandatory visibility predicate for ticket-list reads, derived from
+        the RESOLVED viewer row. employee -> exactly this person's tickets
+        (employee_id = viewer id); agent/admin -> None (unrestricted). The
+        repository receives the predicate, never the role."""
+        if viewer.get("role") == "employee":
+            return as_uuid(viewer["id"])
+        return None
+
+    def _require_viewable(self, row: dict, viewer: dict, *, action: str = "view") -> None:
+        """Detail gate. Reuses _list_scope as the SINGLE source of truth for
+        "which roles are restricted": a restricted viewer may open only
+        tickets in their scope; KB-style 403 (known to exist, not for this
+        viewer) rather than 404. Note the check reads the resolved viewer and
+        the fetched row — no client claim participates."""
+        scoped_id = self._list_scope(viewer)
+        if scoped_id is not None and scoped_id != as_uuid(row["employee_id"]):
+            raise HTTPException(status_code=403, detail=f"Not allowed to {action} this ticket.")
+
+    STAFF_ROLES = frozenset({"agent", "admin"})
+
+    def require_staff(self, viewer: dict) -> None:
+        """Staff-only operations: assignment, classification, auto-routing,
+        workload. Restricted roles answer 403 before any ticket query for the
+        operation begins — existence is never tested for a claim that cannot
+        act. Restricted set: RESTRICTED_TICKET_ROLES (same class, read side);
+        new roles added later default to neither, i.e. non-staff."""
+        if viewer.get("role") not in self.STAFF_ROLES:
+            raise HTTPException(status_code=403, detail="Not allowed: HR staff or admin only.")
+
     # -- reads --------------------------------------------------------------
 
-    def get(self, tid: str) -> dict:
-        """GET /tickets/{TKT-123 | uuid} — full ticket incl. thread."""
-        return self._full(tid)
+    def get(self, tid: str, *, viewer: dict) -> dict:
+        """GET /tickets/{TKT-123 | uuid} — full ticket incl. thread, gated by
+        the server-resolved viewer."""
+        row = self._row(tid)
+        self._require_viewable(row, viewer)
+        return ticket_out(row, self._tickets.list_replies(row["id"]))
 
-    def list(
+    def list_paged(
         self,
         *,
+        viewer: dict,
+        page: int,
+        page_size: int,
+        sort: str = "updated",
+        order: str = "desc",
         status: Optional[str] = None,
         category: Optional[str] = None,
         priority: Optional[str] = None,
@@ -111,11 +164,20 @@ class TicketService:
         assignee_id: Optional[str] = None,
         q: Optional[str] = None,
         unassigned: bool = False,
-        limit: int = 200,
-    ) -> list[dict]:
-        """GET /tickets — newest-first by updatedAt (list items carry empty
-        turns; load a single ticket for the full thread)."""
+    ) -> dict:
+        if sort not in _SORT_KEYS or order not in _ORDER_KEYS:
+            raise HTTPException(
+                status_code=422,
+                detail=f"sort must be one of {sorted(_SORT_KEYS)}; order must be asc or desc",
+            )
+        """Paginated ticket list: one validated page + exact total. Shares the
+        scope rule with list(); count_filtered shares the same filter tuple,
+        so total and items prove to agree with each other by construction."""
+        scope = self._list_scope(viewer)
         rows = self._tickets.list_filtered(
+            employee_scope_id=scope,
+            sort=sort,
+            order=order,
             status=status,
             category=category,
             priority=priority,
@@ -123,27 +185,39 @@ class TicketService:
             assignee_id=assignee_id,
             q=q,
             unassigned=unassigned,
-            limit=limit,
+            limit=page_size,
+            offset=(page - 1) * page_size,
         )
-        return [ticket_out(r, []) for r in rows]
+        total = self._tickets.count_filtered(
+            employee_scope_id=scope,
+            status=status,
+            category=category,
+            priority=priority,
+            employee_id=employee_id,
+            assignee_id=assignee_id,
+            q=q,
+            unassigned=unassigned,
+        )
+        return {
+            "items": [ticket_out(r, []) for r in rows],
+            "page": page,
+            "pageSize": page_size,
+            "total": total,
+            "hasNext": page * page_size < total,
+        }
 
     def agent_workload(self) -> list[dict]:
         """GET /agents/workload — per-agent open/total ticket counts.
 
-        Single lightweight scan; aggregate in Python (v2: no .not_ chains
-        needed). Agents ordered by account creation date."""
+        One GROUP BY aggregate in the repository keyed by assignee; the
+        agent roster supplies ordering (account creation date) and the
+        zero-count defaults via the same [0, 0] schema as before. No
+        viewer data participates, so no per-viewer keying exists."""
         agents = self._users.agents()
-        scan = self._tickets.scan_assignee_status(2000)
-        counts: dict[str, list[int]] = {}  # id -> [open, total]
-        for t in scan:
-            assignee = t.get("assignee_id")
-            if not assignee:
-                continue
-            entry = counts.setdefault(assignee, [0, 0])
-            entry[1] += 1
-            if t["status"] in ACTIVE_STATUSES:
-                entry[0] += 1
-
+        counts = {
+            row["agent_id"]: [row["open_count"], row["total_count"]]
+            for row in self._tickets.count_by_assignee(ACTIVE_STATUSES)
+        }
         return [
             {
                 "id": u["id"],
@@ -200,11 +274,13 @@ class TicketService:
 
         Agent reply: stamps firstReplyAt (once) and Open -> In Progress.
         Employee reply: non-final statuses flip to Waiting on Employee.
+        Restricted (employee) author may reply only on their own ticket.
         """
         row = self._row(tid)
         author = self._users.get_by_id(author_id)
         if not author:
             raise HTTPException(status_code=422, detail="authorId does not match a known user")
+        self._require_viewable(row, author, action="reply to")
         role = author["role"]
         flow_event(
             "ticket.service.validation_completed",
@@ -253,12 +329,14 @@ class TicketService:
 
     def update_status(self, tid: str, *, status: str, actor_id: str) -> dict:
         """store.js updateStatus parity: Resolved stamps resolvedAt, Closed also
-        stamps closedBy, reopening clears both."""
+        stamps closedBy, reopening clears both. Restricted (employee) actor
+        may transition only their own ticket."""
         row = self._row(tid)
 
         actor = self._users.get_by_id(actor_id)
         if not actor:
             raise HTTPException(status_code=422, detail="actorId does not match a known user")
+        self._require_viewable(row, actor, action="modify")
         flow_event(
             "ticket.service.validation_completed",
             operation="tickets.status",
@@ -382,7 +460,13 @@ class TicketService:
     # -- attachments ---------------------------------------------------------
 
     def upload_attachment(
-        self, tid: str, *, filename: str | None, content_type: str | None, data: bytes
+        self,
+        tid: str,
+        *,
+        filename: str | None,
+        content_type: str | None,
+        data: bytes,
+        viewer: dict,
     ) -> dict:
         """POST /tickets/{id}/attachment — one file per ticket (re-upload
         replaces the previous attachment), <=5 MB."""
@@ -390,6 +474,7 @@ class TicketService:
             raise HTTPException(status_code=422, detail="No file provided")
 
         row = self._row(tid)  # 404 beats 413 — check existence before storage
+        self._require_viewable(row, viewer, action="modify")
         self._storage.check_size(data)
 
         ext = os.path.splitext(filename)[1][:16] or ".bin"
@@ -418,10 +503,11 @@ class TicketService:
             self._storage.remove(row["attachment_path"])
         return updated
 
-    def attachment_url(self, tid: str, ttl: int) -> dict:
+    def attachment_url(self, tid: str, ttl: int, *, viewer: dict) -> dict:
         """GET /tickets/{id}/attachment — short-lived signed URL for the file.
         The URL itself (one-time token) is deliberately never logged."""
         row = self._row(tid)
+        self._require_viewable(row, viewer)
         if not row.get("attachment_path"):
             raise HTTPException(status_code=404, detail="Ticket has no attachment")
 

@@ -10,6 +10,8 @@ completed adds expiry metadata. The signed URL (one-time token inside) and
 the attachment NAME are never logged.
 """
 
+from typing import Optional
+
 from fastapi import APIRouter, Depends, Request, Response, UploadFile
 
 from app.config import SIGNED_URL_TTL
@@ -25,10 +27,12 @@ router = APIRouter(tags=["attachments"])
 def upload_attachment(
     tid: str,
     file: UploadFile,
+    viewerId: Optional[str] = None,
     svc: TicketService = Depends(get_ticket_service),
 ):
     """POST /tickets/{id}/attachment — multipart upload, <=5 MB."""
     data = file.file.read()
+    viewer = svc.require_viewer(viewerId)
     with flow_operation(
         "attachment.upload",
         operation="tickets.attachment_upload",
@@ -37,12 +41,14 @@ def upload_attachment(
         ticket_ref=tid,
         size_bytes=len(data),
         content_type=file.content_type,
+        viewer_id=viewer["id"],
     ):
         return svc.upload_attachment(
             tid,
             filename=file.filename,
             content_type=file.content_type,
             data=data,
+            viewer=viewer,
         )
 
 
@@ -51,17 +57,20 @@ def attachment_url(
     tid: str,
     request: Request,
     ttl: int = SIGNED_URL_TTL,
+    viewerId: Optional[str] = None,
     svc: TicketService = Depends(get_ticket_service),
 ):
     """GET /tickets/{id}/attachment — short-lived signed URL for the file."""
+    viewer = svc.require_viewer(viewerId)
     with flow_operation(
         "attachment.url",
         operation="tickets.attachment_url",
         method="GET",
         path=f"/api/tickets/{tid}/attachment",
         ticket_ref=tid,
+        viewer_id=viewer["id"],
     ) as event:
-        result = svc.attachment_url(tid, ttl)
+        result = svc.attachment_url(tid, ttl, viewer=viewer)
         result["url"] = f"{str(request.base_url).rstrip('/')}{result['url']}"
         event["expires_in_seconds"] = result["expiresInSeconds"]
         return result
