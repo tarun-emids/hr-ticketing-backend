@@ -4,42 +4,44 @@ The file bytes are read here (that is the HTTP-facing concern) — everything
 else — size cap, path, storage I/O, the signed URL — belongs to the layers
 below.
 
+IDENTITY: the bearer token is the deciding identity. Employees may handle
+attachments of their OWN tickets only; agents and admins handle any (the
+worktable runs on them). A client viewerId that disagrees with the token is
+rejected, not honoured; the service still receives a ``viewer`` so its own
+gates stay consistent.
+
 Observability: ``attachment.upload`` / ``attachment.url`` events. Request
 descriptors (ticket ref, size, content type) ride BOTH boundary events;
 completed adds expiry metadata. The signed URL (one-time token inside) and
 the attachment NAME are never logged.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, UploadFile
+from typing import Optional
+
+from fastapi import APIRouter, Depends, Request, Response, UploadFile
 
 from app.config import SIGNED_URL_TTL
-from app.deps import get_current_account, get_storage_repo, get_ticket_service
+from app.deps import acting_user_id, get_current_account, get_storage_repo, get_ticket_service
 from app.observability import flow_operation
 from app.repositories.attachment_storage import AttachmentStorageRepository
 from app.services.ticket_service import TicketService
 
 router = APIRouter(tags=["attachments"])
 
-_HR_ROLES = ("agent", "admin")
-
-
-def _ensure_attachment_access(ticket: dict, account: dict) -> None:
-    """Employees may handle attachments of their OWN tickets only; agents and
-    admins handle any (the worktable runs on them)."""
-    if account.get("role") not in _HR_ROLES and str(ticket.get("employeeId")) != str(account["id"]):
-        raise HTTPException(status_code=403, detail="Not your ticket.")
-
 
 @router.post("/tickets/{tid}/attachment")
 def upload_attachment(
     tid: str,
     file: UploadFile,
+    viewerId: Optional[str] = None,
     account: dict = Depends(get_current_account),
     svc: TicketService = Depends(get_ticket_service),
 ):
-    """POST /tickets/{id}/attachment — multipart upload, <=5 MB."""
+    """POST /tickets/{id}/attachment — multipart upload, <=5 MB. Access is
+    enforced by the service's viewer gate (employees: own ticket only)."""
     data = file.file.read()
-    _ensure_attachment_access(svc.get(tid), account)
+    acting_user_id(account, viewerId)  # claims validated; the token wins
+    viewer = account
     with flow_operation(
         "attachment.upload",
         operation="tickets.attachment_upload",
@@ -55,6 +57,7 @@ def upload_attachment(
             filename=file.filename,
             content_type=file.content_type,
             data=data,
+            viewer=viewer,
         )
 
 
@@ -63,11 +66,14 @@ def attachment_url(
     tid: str,
     request: Request,
     ttl: int = SIGNED_URL_TTL,
+    viewerId: Optional[str] = None,
     account: dict = Depends(get_current_account),
     svc: TicketService = Depends(get_ticket_service),
 ):
-    """GET /tickets/{id}/attachment — short-lived signed URL for the file."""
-    _ensure_attachment_access(svc.get(tid), account)
+    """GET /tickets/{id}/attachment — short-lived signed URL for the file.
+    Same ownership rule as the upload (employees see their own files)."""
+    acting_user_id(account, viewerId)  # claims validated; the token wins
+    viewer = account
     with flow_operation(
         "attachment.url",
         operation="tickets.attachment_url",
@@ -76,7 +82,7 @@ def attachment_url(
         ticket_ref=tid,
         actor_id=str(account["id"]),
     ) as event:
-        result = svc.attachment_url(tid, ttl)
+        result = svc.attachment_url(tid, ttl, viewer=viewer)
         result["url"] = f"{str(request.base_url).rstrip('/')}{result['url']}"
         event["expires_in_seconds"] = result["expiresInSeconds"]
         return result

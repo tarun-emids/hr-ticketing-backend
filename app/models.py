@@ -17,6 +17,7 @@ from pydantic.alias_generators import to_camel
 CATEGORIES = ["Payroll", "Leave", "Benefits", "Onboarding", "Policy", "Other"]
 PRIORITIES = ["Low", "Medium", "High", "Urgent"]
 STATUSES = ["Open", "In Progress", "Waiting on Employee", "Resolved", "Closed"]
+ACTIVE_STATUSES: tuple[str, ...] = ("Open", "In Progress", "Waiting on Employee")
 
 
 class CamelModel(BaseModel):
@@ -77,6 +78,14 @@ class DraftSubmit(CamelModel):
 class ReplyCreate(CamelModel):
     author_id: str
     text: str = Field(min_length=1, max_length=5_000)
+
+
+class FeedbackCreate(CamelModel):
+    """Ticket-closure feedback body: rating mandatory, comment optional."""
+
+    user_id: str
+    rating: int = Field(ge=1, le=5)
+    comment: str = Field(default="", max_length=2_000)
 
 
 class NotificationRead(CamelModel):
@@ -195,6 +204,20 @@ def attachment_out(row: dict) -> Optional[dict]:
         "size": row.get("attachment_size"),
         "path": row["attachment_path"],
         "url": None,  # filled in by /tickets/{id}/attachment (signed URL)
+    }
+
+
+def feedback_out(row: dict, ticket_ref: str) -> dict:
+    """Feedback row -> API shape. ticketId is the TKT-ref the frontend uses
+    for URLs; the row only carries the uuid, so the caller supplies the ref
+    it already resolved (same spirit as ticket_out's two arguments)."""
+    return {
+        "ticketId": ticket_ref,
+        "employeeId": row["employee_id"],
+        "rating": row["rating"],
+        "comment": row["comment"],
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
     }
 
 

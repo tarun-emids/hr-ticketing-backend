@@ -2,6 +2,14 @@ import uuid as uuidlib
 
 from tests.conftest import U, auth_headers, ticket_payload
 
+ALICIA = auth_headers("alicia")
+
+
+def items(r):
+    """The only legal reading of GET /tickets after legacy removal:
+    paginated envelope -> its items list."""
+    return r.json()["items"]
+
 
 def test_create_ticket_returns_frontend_shape(api):
     r = api.client.post("/api/tickets", json=ticket_payload(U["priya"]))
@@ -105,11 +113,8 @@ def test_get_ticket_by_numeric_key(api):
 
 
 def test_get_ticket_by_uuid(api):
-    headers = auth_headers("tomas")
-    created = api.client.post(
-        "/api/tickets", json=ticket_payload(U["tomas"]), headers=headers
-    ).json()
-    r = api.client.get(f"/api/tickets/{created['uuid']}", headers=headers)
+    created = api.client.post("/api/tickets", json=ticket_payload(U["priya"])).json()
+    r = api.client.get(f"/api/tickets/{created['uuid']}")
     assert r.status_code == 200
     assert r.json()["uuid"] == created["uuid"]
 
@@ -137,11 +142,11 @@ def test_get_ticket_returns_full_thread_with_replies(api):
 
 def test_list_tickets_newest_first(api):
     api.client.post("/api/tickets", json=ticket_payload(U["priya"]))
-    r = api.client.get("/api/tickets", headers=auth_headers("alicia"))
-    ids = [t["id"] for t in r.json()]
-    assert all(t["turns"] == [] for t in r.json())
+    r = api.client.get("/api/tickets", headers=ALICIA)
+    ids = [t["id"] for t in items(r)]
+    assert all(t["turns"] == [] for t in items(r))
     assert ids == ["TKT-104", "TKT-103", "TKT-102", "TKT-101"]
-    fetched = api.client.get(f"/api/tickets/{ids[0]}", headers=auth_headers("alicia")).json()
+    fetched = api.client.get(f"/api/tickets/{ids[0]}", headers=ALICIA).json()
     assert fetched["employeeId"] == U["priya"]
 
 
@@ -149,7 +154,7 @@ def test_list_tickets_employee_hard_scoped_to_self(api):
     """Employees see ONLY their own tickets — even without a filter, and a
     foreign employeeId is rejected instead of honoured."""
     api.client.post("/api/tickets", json=ticket_payload(U["priya"]))
-    scoped = [t["id"] for t in api.client.get("/api/tickets").json()]
+    scoped = [t["id"] for t in items(api.client.get("/api/tickets"))]
     assert scoped == ["TKT-104", "TKT-101"]  # created above + seeded priya row
 
     r = api.client.get("/api/tickets", params={"employeeId": U["marcus"]})
@@ -158,36 +163,37 @@ def test_list_tickets_employee_hard_scoped_to_self(api):
     r = api.client.get(
         "/api/tickets", params={"employeeId": U["priya"]}, headers=auth_headers("alicia")
     )
-    assert [t["id"] for t in r.json()] == ["TKT-104", "TKT-101"]
+    assert [t["id"] for t in items(r)] == ["TKT-104", "TKT-101"]
 
 
 def test_list_tickets_filters(api):
     # staff token: agents may filter by anyone (or nobody) across the directory
-    alicia = auth_headers("alicia")
-    r = api.client.get("/api/tickets", params={"status": "Resolved"}, headers=alicia)
-    assert [t["id"] for t in r.json()] == ["TKT-103"]
+    r = api.client.get("/api/tickets", params={"status": "Resolved"}, headers=ALICIA)
+    assert [t["id"] for t in items(r)] == ["TKT-103"]
 
-    r = api.client.get("/api/tickets", params={"category": "Leave"}, headers=alicia)
-    assert [t["id"] for t in r.json()] == ["TKT-102"]
+    r = api.client.get("/api/tickets", params={"category": "Leave"}, headers=ALICIA)
+    assert [t["id"] for t in items(r)] == ["TKT-102"]
 
-    r = api.client.get("/api/tickets", params={"priority": "Urgent"}, headers=alicia)
-    assert [t["id"] for t in r.json()] == ["TKT-103"]
+    r = api.client.get("/api/tickets", params={"priority": "Urgent"}, headers=ALICIA)
+    assert [t["id"] for t in items(r)] == ["TKT-103"]
 
-    r = api.client.get("/api/tickets", params={"employeeId": U["marcus"]}, headers=alicia)
-    assert [t["id"] for t in r.json()] == ["TKT-102"]
+    r = api.client.get("/api/tickets", params={"employeeId": U["marcus"]}, headers=ALICIA)
+    assert [t["id"] for t in items(r)] == ["TKT-102"]
 
-    r = api.client.get("/api/tickets", params={"assigneeId": U["alicia"]}, headers=alicia)
-    assert [t["id"] for t in r.json()] == ["TKT-102"]
+    r = api.client.get("/api/tickets", params={"assigneeId": U["alicia"]}, headers=ALICIA)
+    assert [t["id"] for t in items(r)] == ["TKT-102"]
 
-    r = api.client.get("/api/tickets", params={"unassigned": "true"}, headers=alicia)
-    assert set(t["id"] for t in r.json()) == {"TKT-101"}
+    r = api.client.get("/api/tickets", params={"unassigned": "true"}, headers=ALICIA)
+    assert set(t["id"] for t in items(r)) == {"TKT-101"}
 
-    r = api.client.get("/api/tickets", params={"q": "carryover"}, headers=alicia)
-    assert [t["id"] for t in r.json()] == ["TKT-102"]
+    r = api.client.get("/api/tickets", params={"q": "carryover"}, headers=ALICIA)
+    assert [t["id"] for t in items(r)] == ["TKT-102"]
 
 
-def test_list_tickets_limit(api):
-    alicia = auth_headers("alicia")
-    r = api.client.get("/api/tickets", params={"limit": 1}, headers=alicia)
-    assert len(r.json()) == 1
-    assert r.json()[0]["id"] == "TKT-103"
+def test_list_tickets_page_size(api):
+    """One row per page through the envelope (deeper pagination windows live
+    in test_tickets_pagination.py)."""
+    r = api.client.get("/api/tickets", params={"pageSize": 1}, headers=ALICIA)
+    body = r.json()
+    assert len(body["items"]) == 1 and body["total"] == 3 and body["hasNext"] is True
+    assert body["page"] == 1 and body["pageSize"] == 1

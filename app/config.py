@@ -2,12 +2,15 @@
 
 import os
 import threading
+import time
 from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
+
+from app.cache import TtlCache
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env")
@@ -93,3 +96,27 @@ def close_database() -> None:
         if _database is not None:
             _database.close()
             _database = None
+
+
+KB_CACHE_TTL = float(os.getenv("KB_CACHE_TTL", "30"))
+
+_kb_cache: Optional[TtlCache] = None
+_kb_cache_lock = threading.Lock()
+
+
+def get_kb_cache() -> "TtlCache":
+    """Return the lazily-created shared KB metadata cache.
+
+    One cache per process, like the database pool: all request-scoped
+    services reach the same instance, so a cache hit in one request
+    serves the next. Never closed — it owns nothing external; expiry
+    and eviction are the only lifecycle it needs.
+    """
+    global _kb_cache
+    if _kb_cache is None:
+        with _kb_cache_lock:
+            if _kb_cache is None:
+                if KB_CACHE_TTL <= 0:
+                    raise RuntimeError("KB_CACHE_TTL must be a positive number of seconds.")
+                _kb_cache = TtlCache(now=time.monotonic, ttl=KB_CACHE_TTL)
+    return _kb_cache

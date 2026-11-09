@@ -9,6 +9,10 @@ from tests.integration.conftest import create_ticket
 pytestmark = pytest.mark.integration
 
 
+def items(r):
+    return r.json()["items"]
+
+
 def test_live_users_agents_meta(live):
     r = live["client"].get("/api/users")
     assert r.status_code == 200
@@ -25,7 +29,7 @@ def test_live_users_agents_meta(live):
 
 def test_live_create_get_roundtrip(live, cleanup):
     ref = create_ticket(live)
-    r = live["client"].get(f"/api/tickets/{ref}")
+    r = live["client"].get(f"/api/tickets/{ref}", params={"viewerId": live["agents"][0]["id"]})
     assert r.status_code == 200
     t = r.json()
     assert t["id"] == ref
@@ -75,7 +79,11 @@ def test_live_golden_flow_reply_resolve_close_reopen(live, cleanup):
 def test_live_assign_pickup_reply(live, cleanup):
     ref = create_ticket(live)
     agent = live["agents"][1]["id"]
-    r = live["client"].patch(f"/api/tickets/{ref}/assignee", json={"assigneeId": agent})
+    r = live["client"].patch(
+        f"/api/tickets/{ref}/assignee",
+        params={"viewerId": live["agents"][1]["id"]},
+        json={"assigneeId": agent},
+    )
     t = r.json()
     assert t["assigneeId"] == agent
     assert t["status"] == "In Progress"
@@ -85,8 +93,8 @@ def test_live_assign_pickup_reply(live, cleanup):
 
 
 def test_live_employee_reply_waits(live, cleanup):
-    ref = create_ticket(live)
     employee = live["employees"][2]["id"]
+    ref = create_ticket(live, employee=employee)
     r = live["client"].patch(
         f"/api/tickets/{ref}/status",
         json={"status": "In Progress", "actorId": live["agents"][0]["id"]},
@@ -138,23 +146,25 @@ def test_live_validation_422(live, cleanup):
 
 
 def test_live_missing_ticket_404(live):
-    r = live["client"].get("/api/tickets/TKT-999999")
+    r = live["client"].get("/api/tickets/TKT-999999", params={"viewerId": live["agents"][0]["id"]})
     assert r.status_code == 404
 
 
 def test_live_list_filters_see_created_ticket(live, cleanup):
     ref_a = create_ticket(live, employee=live["employees"][0]["id"], category="Leave")
     ref_b = create_ticket(live, employee=live["employees"][1]["id"], category="Leave")
-
-    r = live["client"].get("/api/tickets", params={"category": "Leave"})
-    ids = [t["id"] for t in r.json()]
+    agent = live["agents"][0]["id"]
+    r = live["client"].get("/api/tickets", params={"category": "Leave", "viewerId": agent})
+    ids = [t["id"] for t in items(r)]
     assert ref_a in ids and ref_b in ids
 
-    r = live["client"].get("/api/tickets", params={"employeeId": live["employees"][1]["id"]})
-    assert ref_b in [t["id"] for t in r.json()]
+    r = live["client"].get(
+        "/api/tickets", params={"employeeId": live["employees"][1]["id"], "viewerId": agent}
+    )
+    assert ref_b in [t["id"] for t in items(r)]
 
-    r = live["client"].get("/api/tickets", params={"unassigned": "true"})
-    assert {ref_a, ref_b} <= {t["id"] for t in r.json()}
+    r = live["client"].get("/api/tickets", params={"unassigned": "true", "viewerId": agent})
+    assert {ref_a, ref_b} <= {t["id"] for t in items(r)}
 
 
 def test_live_attachment_roundtrip(live, cleanup):
@@ -162,6 +172,7 @@ def test_live_attachment_roundtrip(live, cleanup):
 
     r = live["client"].post(
         f"/api/tickets/{ref}/attachment",
+        params={"viewerId": live["agents"][0]["id"]},
         files={"file": ("live-test.txt", b"integration attachment payload", "text/plain")},
     )
     assert r.status_code == 200, r.text
@@ -172,7 +183,9 @@ def test_live_attachment_roundtrip(live, cleanup):
     assert t["attachment"]["name"] == "live-test.txt"
     assert t["attachment"]["size"] == len(b"integration attachment payload")
 
-    r = live["client"].get(f"/api/tickets/{ref}/attachment")
+    r = live["client"].get(
+        f"/api/tickets/{ref}/attachment", params={"viewerId": live["agents"][0]["id"]}
+    )
     assert r.status_code == 200
     body = r.json()
     assert body["name"] == "live-test.txt"
@@ -180,13 +193,99 @@ def test_live_attachment_roundtrip(live, cleanup):
 
 
 def test_live_attachment_on_missing_ticket_404(live):
-    r = live["client"].get("/api/tickets/99999/attachment")
+    r = live["client"].get(
+        "/api/tickets/99999/attachment", params={"viewerId": live["agents"][0]["id"]}
+    )
     assert r.status_code == 404
 
 
 def test_live_update_priority_category(live, cleanup):
     ref = create_ticket(live)
-    r = live["client"].patch(f"/api/tickets/{ref}/priority", json={"priority": "Urgent"})
+    r = live["client"].patch(
+        f"/api/tickets/{ref}/priority",
+        params={"viewerId": live["agents"][0]["id"]},
+        json={"priority": "Urgent"},
+    )
     assert r.json()["priority"] == "Urgent"
-    r = live["client"].patch(f"/api/tickets/{ref}/category", json={"category": "Policy"})
+    r = live["client"].patch(
+        f"/api/tickets/{ref}/category",
+        params={"viewerId": live["agents"][0]["id"]},
+        json={"category": "Policy"},
+    )
     assert r.json()["category"] == "Policy"
+
+
+def test_live_feedback_roundtrip(live, cleanup):
+    ref = create_ticket(live)
+    agent = live["agents"][0]["id"]
+    employee = live["employees"][0]["id"]
+
+    # Guard on the wrong state first: the ticket is Open.
+    r = live["client"].post(
+        f"/api/tickets/{ref}/feedback",
+        json={"userId": employee, "rating": 3, "comment": "too soon"},
+    )
+    assert r.status_code == 409
+
+    r = live["client"].patch(
+        f"/api/tickets/{ref}/status", json={"status": "Closed", "actorId": agent}
+    )
+    assert r.status_code == 200 and r.json()["closedBy"] == agent
+
+    r = live["client"].post(
+        f"/api/tickets/{ref}/feedback",
+        json={"userId": employee, "rating": 4, "comment": "live postgres round trip"},
+    )
+    assert r.status_code == 201
+    assert r.json()["ticketId"] == ref
+    assert r.json()["rating"] == 4
+
+    # Replace path: resubmission updates the single row, through real psycopg.
+    r = live["client"].post(
+        f"/api/tickets/{ref}/feedback",
+        json={"userId": employee, "rating": 5, "comment": "resolved properly"},
+    )
+    assert r.status_code == 200 and r.json()["rating"] == 5
+
+    r = live["client"].post(
+        f"/api/tickets/{ref}/feedback",
+        json={"userId": live["employees"][1]["id"], "rating": 1},
+    )
+    assert r.status_code == 403
+
+    r = live["client"].get(
+        f"/api/tickets/{ref}/feedback", params={"userId": live["agents"][1]["id"]}
+    )
+    assert r.status_code == 200 and r.json()["rating"] == 5
+
+    # The database says exactly one row exists, with the replaced rating.
+    from app.config import get_database
+    from app.repositories.feedback_repository import FeedbackRepository
+
+    ticket_uuid = (
+        live["client"].get(f"/api/tickets/{ref}", params={"viewerId": agent}).json()["uuid"]
+    )
+    row = FeedbackRepository(get_database()).get_for_ticket(ticket_uuid)
+    assert row["rating"] == 5
+    assert row["comment"] == "resolved properly"
+
+
+def test_live_agents_workload_group_by(live, cleanup):
+    """The GROUP BY aggregate runs the identical statement live; one created
+    and assigned ticket moves exactly [open, total] for the assignee."""
+    agent = live["agents"][0]["id"]
+    wl = live["client"].get("/api/agents/workload", params={"viewerId": agent})
+    assert wl.status_code == 200
+    before = {row["id"]: (row["openCount"], row["totalCount"]) for row in wl.json()}
+
+    ref = create_ticket(live)
+    r = live["client"].patch(
+        f"/api/tickets/{ref}/assignee",
+        params={"viewerId": agent},
+        json={"assigneeId": agent},
+    )
+    assert r.status_code == 200
+
+    wl = live["client"].get("/api/agents/workload", params={"viewerId": agent})
+    after = {row["id"]: (row["openCount"], row["totalCount"]) for row in wl.json()}
+    assert after[agent] == (before[agent][0] + 1, before[agent][1] + 1)

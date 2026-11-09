@@ -326,3 +326,34 @@ def test_agent_chunk_rows_feed_the_assistant_gate(api, admin_id):
         "SELECT count(*) AS n FROM kb_document_chunks WHERE document_slug=%s", ("leave-policy",)
     )
     assert rows[0]["n"] == 0
+
+
+def test_kb_read_cache_never_outlives_admin_writes(api, admin_id):
+    marcus = api.U["marcus"]  # employee viewer: employee pool only
+
+    # warm the employee entry from the 5 seeded docs
+    r = api.client.get("/api/kb", params={"viewerId": marcus})
+    assert r.status_code == 200
+    titles = [d["title"] for d in r.json()]
+    assert "New Leave Policy" not in titles
+
+    doc = _upload(api, admin_id).json()  # create invalidates
+    r = api.client.get("/api/kb", params={"viewerId": marcus})
+    assert "New Leave Policy" in [d["title"] for d in r.json()]
+
+    # metadata-only edit ALSO invalidates (touch path, bytes untouched)
+    r = api.client.patch(
+        f"/api/admin/kb/documents/{doc['slug']}",
+        params={"actorId": admin_id},
+        data={"title": "New Leave Policy (2026 update)"},
+    )
+    assert r.status_code == 200
+    r = api.client.get("/api/kb", params={"viewerId": marcus})
+    assert "New Leave Policy (2026 update)" in [d["title"] for d in r.json()]
+
+    # delete invalidates: the row vanishes for the next reader
+    r = api.client.delete(f"/api/admin/kb/documents/{doc['slug']}", params={"actorId": admin_id})
+    assert r.status_code == 200
+    r = api.client.get("/api/kb", params={"viewerId": marcus})
+    titles = [d["title"] for d in r.json()]
+    assert "New Leave Policy (2026 update)" not in titles

@@ -189,6 +189,24 @@ INSERT INTO users (name, email, role) VALUES
   ('Ruth Meyer',   'ruth@acme.com',      'agent')
 ON CONFLICT (email) DO NOTHING;
 
+-- Ticket-closure feedback: one rating (+optional comment) per ticket,
+-- written by the ticket's employee. UNIQUE (ticket_id) is the
+-- duplicate-prevention guarantee; rating/comment quality lives in CHECKs so
+-- bad rows are rejected in the database, not just in Pydantic.
+CREATE TABLE IF NOT EXISTS feedback (
+  id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  ticket_id   uuid NOT NULL UNIQUE REFERENCES tickets (id) ON DELETE CASCADE,
+  employee_id uuid NOT NULL REFERENCES users(id),
+  rating      integer NOT NULL CHECK (rating BETWEEN 1 AND 5),
+  comment     text NOT NULL DEFAULT '' CHECK (char_length(comment) <= 2000),
+  created_at  timestamptz NOT NULL DEFAULT now(),
+  updated_at  timestamptz NOT NULL DEFAULT now()
+);
+
+DROP TRIGGER IF EXISTS trg_feedback_updated ON feedback;
+CREATE TRIGGER trg_feedback_updated
+  BEFORE UPDATE ON feedback
+  FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 -- ------------------------------------------------------------
 -- Knowledge base policy documents
 --   Metadata and the rendered PDF bytes (`data`) both live here: the

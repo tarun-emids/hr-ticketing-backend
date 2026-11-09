@@ -1,7 +1,8 @@
 """Ticket lifecycle/assignee/priority/category — staff workflow endpoints
 require an AGENT (or admin) bearer token; the acting user always comes from
-the token (a body actorId that disagrees is rejected), while replies derive
-their author the same way."""
+the token (a body actorId that disagrees, or a viewerId claim that does, is
+rejected), while replies derive their author the same way. Cover views (job
+reads) may be made by staff tokens as well."""
 
 from uuid import UUID
 
@@ -22,8 +23,12 @@ def reply(api, tid, key, text="Replying right here."):
     )
 
 
+def ticket_by_ref(api, tid, key="alicia"):
+    return api.client.get(f"/api/tickets/{tid}", headers=auth_headers(key)).json()
+
+
 def test_agent_first_reply_stamps_and_moves_to_in_progress(api):
-    before = api.client.get("/api/tickets/TKT-101", headers=ALICIA).json()
+    before = ticket_by_ref(api, "TKT-101")
     assert before["firstReplyAt"] is None
     assert before["status"] == "Open"
 
@@ -37,7 +42,7 @@ def test_agent_first_reply_stamps_and_moves_to_in_progress(api):
 
 
 def test_second_agent_reply_keeps_first_reply_at(api):
-    after_first = api.client.get("/api/tickets/TKT-102", headers=BEN).json()
+    after_first = ticket_by_ref(api, "TKT-102", key="ben")
     stamp = after_first["firstReplyAt"]
     r = reply(api, "TKT-102", "ben")
     t = r.json()
@@ -54,7 +59,9 @@ def test_employee_reply_moves_active_ticket_to_waiting_on_employee(api):
             "description": "Does the new dental plan cover partial orthodontic treatment, and where do I check coverage?",
         },
     )
-    created = api.client.get("/api/tickets").json()[0]["id"]
+    from tests.conftest import auth_headers as ah
+
+    created = api.client.get("/api/tickets", headers=ah("priya")).json()["items"][0]["id"]
     r = reply(api, created, "priya")
     t = r.json()
     assert t["status"] == "Waiting on Employee"
@@ -78,11 +85,18 @@ def test_reply_identity_bearer_wins(api):
             "description": "Probe ticket to verify foreign author ids are rejected server-side.",
         },
     )
-    created_id = api.client.get("/api/tickets").json()[0]["id"]
+    created_id = api.client.get("/api/tickets").json()["items"][0]["id"]
     r = api.client.post(
         f"/api/tickets/{created_id}/replies",
         json={"authorId": U["marcus"], "text": "forged author"},
     )
+    assert r.status_code == 403
+
+
+def test_employee_cannot_reply_to_foreign_ticket(api):
+    """The service-side viewable gate also covers replies (Soha's contract):
+    an employee can never write into somebody else's thread."""
+    r = api.client.post("/api/tickets/TKT-102/replies", json={"authorId": U["priya"], "text": "hi"})
     assert r.status_code == 403
 
 
@@ -139,7 +153,7 @@ def test_reopening_clears_resolved_at_and_closed_by(api):
         json={"status": "In Progress", "actorId": U["ben"]},
         headers=BEN,
     )
-    t = api.client.get("/api/tickets/TKT-101", headers=ALICIA).json()
+    t = ticket_by_ref(api, "TKT-101")
     assert t["resolvedAt"] is None
     assert t["closedBy"] is None
 
@@ -150,7 +164,7 @@ def test_waiting_on_employee_keeps_timestamps(api):
         json={"status": "Resolved", "actorId": U["ben"]},
         headers=BEN,
     )
-    stamp = api.client.get("/api/tickets/TKT-101", headers=ALICIA).json()["resolvedAt"]
+    stamp = ticket_by_ref(api, "TKT-101")["resolvedAt"]
     t = api.client.patch(
         "/api/tickets/TKT-101/status",
         json={"status": "Waiting on Employee", "actorId": U["ben"]},
@@ -236,7 +250,7 @@ def test_user_lookup_accepts_postgresql_uuid(api):
 
 
 def test_assign_to_already_replied_ticket_no_duplicate_pickup(api):
-    before = api.client.get("/api/tickets/TKT-102", headers=BEN).json()
+    before = ticket_by_ref(api, "TKT-102", key="ben")
     stamp = before["firstReplyAt"]
     r = api.client.patch(
         "/api/tickets/TKT-102/assignee", json={"assigneeId": U["ben"]}, headers=ALICIA
@@ -249,7 +263,9 @@ def test_assign_to_already_replied_ticket_no_duplicate_pickup(api):
 
 
 def test_unassign(api):
-    r = api.client.patch("/api/tickets/TKT-102/assignee", json={"assigneeId": None}, headers=ALICIA)
+    r = api.client.patch(
+        "/api/tickets/TKT-102/assignee", json={"assigneeId": None}, headers=ALICIA
+    )
     assert r.json()["assigneeId"] is None
 
 
@@ -291,7 +307,7 @@ def test_set_category_invalid(api):
 
 
 def test_updates_bump_updated_at(api):
-    before = api.client.get("/api/tickets/TKT-101", headers=ALICIA).json()["updatedAt"]
+    before = ticket_by_ref(api, "TKT-101")["updatedAt"]
     api.client.patch("/api/tickets/TKT-101/priority", json={"priority": "Low"}, headers=ALICIA)
-    after = api.client.get("/api/tickets/TKT-101", headers=ALICIA).json()["updatedAt"]
+    after = ticket_by_ref(api, "TKT-101")["updatedAt"]
     assert after > before
