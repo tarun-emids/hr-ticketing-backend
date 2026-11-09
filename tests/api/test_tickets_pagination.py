@@ -138,6 +138,7 @@ def test_sort_by_priority_matches_frontend_prio_order(api):
             "subject": "Zebra payslip check for sorting",
             "description": "Sort-check ticket that is the newest row in the table.",
         },
+        headers=auth_headers("dana"),
     ).json()
     body = api.client.get(
         "/api/tickets",
@@ -173,7 +174,7 @@ def test_sort_by_status_matches_lifecycle_not_alphabetical(api):
     # Alphabetical would order: 'Closed' < 'In Progress' < 'Open' < 'Resolved'.
     # Lifecycle order (the frontend's STATUS_OPTIONS) is what must win.
     body = api.client.get(
-        "/api/tickets", params={"viewerId": U["alicia"], "sort": "status", "order": "asc"}
+        "/api/tickets", params={"viewerId": U["alicia"], "sort": "status", "order": "asc"}, headers=ALICIA
     ).json()
     assert [t["id"] for t in body["items"]] == ["TKT-101", "TKT-102", "TKT-103"]
 
@@ -182,7 +183,7 @@ def test_sort_by_employee_uses_owner_display_names(api):
     # Dana Cole < Marcus Webb < Priya Sharma — and the join must NOT leak
     # user columns into ticket rows (TKT-101 still identifies as TKT-101).
     body = api.client.get(
-        "/api/tickets", params={"viewerId": U["alicia"], "sort": "employee", "order": "asc"}
+        "/api/tickets", params={"viewerId": U["alicia"], "sort": "employee", "order": "asc"}, headers=ALICIA
     ).json()
     assert [t["employeeId"] for t in body["items"]] == [U["dana"], U["marcus"], U["priya"]]
     assert body["items"][0]["id"] == "TKT-103"  # dana's ticket, correct shape
