@@ -54,10 +54,10 @@ backend/.env, or `alembic -x url=...`).
 
 | Task | Command (from this directory) |
 | --- | --- |
-| Apply all pending revisions | `make migrate` |
-| Declare an existing (pre-Alembic) database as current — one-time | `make migrate-stamp` |
+| Apply all pending revisions (or after a pull) | `make migrate` |
+| Declare a pre-Alembic database as revision 0001, then apply the rest | `make migrate-stamp` then `make migrate` |
 | Start a new empty revision | `make migrate-revision m="add hr_notes to tickets"` |
-| Show applied / current revision | `make migrate` then `docker compose exec backend alembic current` |
+| Show applied / current revision | `docker compose exec backend alembic current` |
 | Emit SQL for review without touching the DB | `alembic upgrade head --sql` (offline output) |
 
 Notes:
@@ -68,17 +68,24 @@ Notes:
 - **`op.execute()` is the tool**: PostgreSQL DDL is richer than SQLAlchemy's
   expression language — write raw SQL in revisions (one statement per
   `op.execute`, tables before their triggers/indexes).
-- `revision 0001` is a faithful port of schema.sql's DDL (same tables,
-  constraints, index/trigger names, same creation order). Its repair
-  history (`.hr@` renames, duplicate-account collapse, role-check widening)
-  is intentionally excluded — new databases start at the clean end-state;
-  a database old enough to need old repairs has already been through them.
+- **A baseline revision captures what EXISTS, not what's shiny: revision
+  0001 is the historical pre-Alembic structure exactly** (no `auth_version`,
+  no reset table); everything THIS release adds is a separate, later
+  revision (0002). Stamping an old database at 0001 and then `upgrade head`
+  therefore brings it fully current. `make migrate-stamp` stamps **0001
+  explicitly, never `head`** — stamping head would silently hide every
+  future revision from an under-migrated database.
+- The historical repair story (`.hr@` renames, duplicate-account collapse,
+  role-check widening) is intentionally absent from 0001 — old databases
+  were already healed; new ones never need it.
 - **Personas/seed data live outside migrations**: `scripts/provision_users.py`,
   `scripts/seed_knowledge_base.py` and `scripts/seed_demo_data.py` remain the
   data owners.
-- `schema.sql` stays in the repository as an emergency hand-applied
-  bootstrap and as the reference for revision 0001; the compose db service
-  no longer auto-applies it on first startup.
+- `schema.sql` mirrors the CURRENT head state (0001 + later revisions) and
+  stays in the repository as an emergency hand-applied bootstrap; the compose
+  db service no longer auto-applies it — stack startup instead runs
+  `migrate-init` (one-shot `alembic upgrade head`) before the demo/kb
+  one-shots and the API. `make migrate` runs the same command on demand.
 
 ### External PostgreSQL or host-based setup
 
@@ -95,9 +102,11 @@ Notes:
    attachments and knowledge-base PDFs), indexes, and triggers.
    [`schema.sql`](./schema.sql) is retained in the repository as an
    emergency hand-applied bootstrap:
-   `psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f schema.sql` produces the
-   same structure; for databases this creates, run `alembic stamp head`
-   afterwards so Alembic picks up at the current revision.
+   `psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f schema.sql` produces the same
+   head-state structure today; afterwards run
+   `alembic stamp 0001 && alembic upgrade head` so Alembic records the
+   position (the 0002 guards are no-ops there, but future revisions apply
+   normally).
 3. Create `.env` from `.env.example`. Configure a PostgreSQL connection URL and
    a persistent attachment signing key:
 
@@ -213,7 +222,7 @@ Supabase's relational tables are PostgreSQL tables and can be exported with
 `pg_dump`. For a new, empty target database:
 
 1. Create the schema on the target with Alembic (`alembic upgrade head`,
-   or `schema.sql` + a follow-up `alembic stamp head` for a hand-applied
+   or `schema.sql` + a follow-up `alembic stamp 0001` for a hand-applied
    bootstrap).
 2. Truncate the seeded rows in the target before importing:
 

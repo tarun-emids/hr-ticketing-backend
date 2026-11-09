@@ -16,9 +16,15 @@ priorities and UUIDs only.
 
 from typing import Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
-from app.deps import get_ticket_service
+from app.deps import (
+    acting_user_id,
+    employee_scoped_id,
+    get_current_account,
+    get_current_agent,
+    get_ticket_service,
+)
 from app.models import (
     AssigneeUpdate,
     CategoryUpdate,
@@ -34,10 +40,16 @@ router = APIRouter(tags=["tickets"])
 
 
 @router.post("/tickets", status_code=201)
-def create_ticket(payload: TicketCreate, svc: TicketService = Depends(get_ticket_service)):
+def create_ticket(
+    payload: TicketCreate,
+    account: dict = Depends(get_current_account),
+    svc: TicketService = Depends(get_ticket_service),
+):
     """POST /tickets — create a ticket (guards: employee exists + role check).
 
     Body accepts camelCase (employeeId, ...) thanks to the alias config.
+    The filing identity comes from the bearer token — a client-supplied
+    employeeId that disagrees with it is rejected instead of honoured.
     """
     with flow_operation(
         "tickets.create",
@@ -45,8 +57,12 @@ def create_ticket(payload: TicketCreate, svc: TicketService = Depends(get_ticket
         method="POST",
         path="/api/tickets",
     ) as op:
+        # The identity decision sits INSIDE the instrumented span on purpose:
+        # a rejected impersonation attempt still emits started → failed(403)
+        # with the request id, so every rejection leaves an audit trail.
+        employee_id = acting_user_id(account, payload.employee_id)
         result = svc.create(
-            employee_id=payload.employee_id,
+            employee_id=employee_id,
             category=payload.category,
             subject=payload.subject,
             description=payload.description,
@@ -73,10 +89,17 @@ def list_tickets(
     q: Optional[str] = None,
     unassigned: bool = False,
     limit: int = 200,
+    account: dict = Depends(get_current_account),
     svc: TicketService = Depends(get_ticket_service),
 ):
     """GET /tickets — newest-first by updatedAt (list items carry empty turns;
-    load a single ticket for the full thread)."""
+    load a single ticket for the full thread).
+
+    Employee tokens can never browse the whole directory: the employeeId
+    filter is FORCED to the token identity (a matching claimed id is fine,
+    a different one is rejected). Staff tokens may filter by anyone or none.
+    """
+    employee_id = employee_scoped_id(account, employeeId)
     # ``q`` is free text — only its PRESENCE is logged, never the value.
     with flow_operation(
         "tickets.list",
@@ -86,7 +109,7 @@ def list_tickets(
         status=status,
         category=category,
         priority=priority,
-        employee_id=employeeId,
+        employee_id=employee_id,
         assignee_id=assigneeId,
         search=bool(q),
         unassigned=unassigned,
@@ -96,7 +119,7 @@ def list_tickets(
             status=status,
             category=category,
             priority=priority,
-            employee_id=employeeId,
+            employee_id=employee_id,
             assignee_id=assigneeId,
             q=q,
             unassigned=unassigned,
@@ -107,8 +130,16 @@ def list_tickets(
 
 
 @router.get("/tickets/{tid}")
-def get_ticket(tid: str, svc: TicketService = Depends(get_ticket_service)):
-    """GET /tickets/{TKT-123 | uuid} — full ticket incl. thread."""
+def get_ticket(
+    tid: str,
+    account: dict = Depends(get_current_account),
+    svc: TicketService = Depends(get_ticket_service),
+):
+    """GET /tickets/{TKT-123 | uuid} — full ticket incl. thread.
+
+    Employee tokens can only open their own tickets; staff (agents/admins)
+    can open any (worktable drill-downs route by ref).
+    """
     with flow_operation(
         "tickets.get",
         operation="tickets.get",
@@ -116,21 +147,32 @@ def get_ticket(tid: str, svc: TicketService = Depends(get_ticket_service)):
         path=f"/api/tickets/{tid}",
     ) as op:
         result = svc.get(tid)
+        if account.get("role") == "employee" and str(result.get("employeeId")) != str(
+            account["id"]
+        ):
+            raise HTTPException(status_code=403, detail="Not your ticket.")
         op["ticket_ref"] = result.get("id")
         op["turns"] = len(result.get("turns") or [])
         return result
 
 
 @router.post("/tickets/{tid}/replies")
-def add_reply(tid: str, payload: ReplyCreate, svc: TicketService = Depends(get_ticket_service)):
-    """POST /tickets/{id}/replies — store.js addReply parity."""
+def add_reply(
+    tid: str,
+    payload: ReplyCreate,
+    account: dict = Depends(get_current_account),
+    svc: TicketService = Depends(get_ticket_service),
+):
+    """POST /tickets/{id}/replies — store.js addReply parity. The author is
+    the bearer-token identity; a mismatching client authorId is rejected."""
+    author_id = acting_user_id(account, payload.author_id)
     with flow_operation(
         "tickets.reply",
         operation="tickets.reply",
         method="POST",
         path=f"/api/tickets/{tid}/replies",
     ) as op:
-        result = svc.add_reply(tid, author_id=payload.author_id, text=payload.text)
+        result = svc.add_reply(tid, author_id=author_id, text=payload.text)
         op["ticket_ref"] = result.get("id")
         op["turns"] = len(result.get("turns") or [])
         return result
@@ -138,17 +180,24 @@ def add_reply(tid: str, payload: ReplyCreate, svc: TicketService = Depends(get_t
 
 @router.patch("/tickets/{tid}/status")
 def update_status(
-    tid: str, payload: StatusUpdate, svc: TicketService = Depends(get_ticket_service)
+    tid: str,
+    payload: StatusUpdate,
+    account: dict = Depends(get_current_agent),
+    svc: TicketService = Depends(get_ticket_service),
 ):
     """store.js updateStatus parity: Resolved stamps resolvedAt, Closed also
-    stamps closedBy, reopening clears both."""
+    stamps closedBy, reopening clears both. Agent/admin routes only — the
+    acting user comes from the token, never from the body."""
     with flow_operation(
         "tickets.status",
         operation="tickets.status",
         method="PATCH",
         path=f"/api/tickets/{tid}/status",
+        actor_id=str(account["id"]),
     ) as op:
-        result = svc.update_status(tid, status=payload.status, actor_id=payload.actor_id)
+        result = svc.update_status(
+            tid, status=payload.status, actor_id=acting_user_id(account, payload.actor_id)
+        )
         op["ticket_ref"] = result.get("id")
         op["new_status"] = result.get("status")
         return result
@@ -156,13 +205,19 @@ def update_status(
 
 @router.patch("/tickets/{tid}/assignee")
 def assign_ticket(
-    tid: str, payload: AssigneeUpdate, svc: TicketService = Depends(get_ticket_service)
+    tid: str,
+    payload: AssigneeUpdate,
+    account: dict = Depends(get_current_agent),
+    svc: TicketService = Depends(get_ticket_service),
 ):
+    """Agent/admin routes: assignment decisions come from staff, never from
+    an employee token."""
     with flow_operation(
         "tickets.assign",
         operation="tickets.assign",
         method="PATCH",
         path=f"/api/tickets/{tid}/assignee",
+        actor_id=str(account["id"]),
     ) as op:
         result = svc.assign_by_key(tid, payload.assignee_id)
         op["ticket_ref"] = result.get("id")
@@ -172,13 +227,17 @@ def assign_ticket(
 
 @router.patch("/tickets/{tid}/priority")
 def set_priority(
-    tid: str, payload: PriorityUpdate, svc: TicketService = Depends(get_ticket_service)
+    tid: str,
+    payload: PriorityUpdate,
+    account: dict = Depends(get_current_agent),
+    svc: TicketService = Depends(get_ticket_service),
 ):
     with flow_operation(
         "tickets.priority",
         operation="tickets.priority",
         method="PATCH",
         path=f"/api/tickets/{tid}/priority",
+        actor_id=str(account["id"]),
     ) as op:
         result = svc.set_priority(tid, payload.priority)
         op["ticket_ref"] = result.get("id")
@@ -187,13 +246,17 @@ def set_priority(
 
 @router.patch("/tickets/{tid}/category")
 def set_category(
-    tid: str, payload: CategoryUpdate, svc: TicketService = Depends(get_ticket_service)
+    tid: str,
+    payload: CategoryUpdate,
+    account: dict = Depends(get_current_agent),
+    svc: TicketService = Depends(get_ticket_service),
 ):
     with flow_operation(
         "tickets.category",
         operation="tickets.category",
         method="PATCH",
         path=f"/api/tickets/{tid}/category",
+        actor_id=str(account["id"]),
     ) as op:
         result = svc.set_category(tid, payload.category)
         op["ticket_ref"] = result.get("id")
@@ -201,13 +264,18 @@ def set_category(
 
 
 @router.post("/tickets/{tid}/auto-assign")
-def auto_assign(tid: str, svc: TicketService = Depends(get_ticket_service)):
+def auto_assign(
+    tid: str,
+    account: dict = Depends(get_current_agent),
+    svc: TicketService = Depends(get_ticket_service),
+):
     """Route a ticket to the least-loaded HR agent (open count, then total)."""
     with flow_operation(
         "tickets.auto_assign",
         operation="tickets.auto_assign",
         method="POST",
         path=f"/api/tickets/{tid}/auto-assign",
+        actor_id=str(account["id"]),
     ) as op:
         result = svc.auto_assign(tid)
         op["ticket_ref"] = result.get("id")
@@ -216,8 +284,11 @@ def auto_assign(tid: str, svc: TicketService = Depends(get_ticket_service)):
 
 
 @router.get("/agents/workload")
-def workload(svc: TicketService = Depends(get_ticket_service)):
-    """GET /agents/workload — per-agent open/total ticket counts."""
+def workload(
+    account: dict = Depends(get_current_agent),
+    svc: TicketService = Depends(get_ticket_service),
+):
+    """GET /agents/workload — per-agent open/total ticket counts (staff only)."""
     with flow_operation(
         "agents.workload",
         operation="agents.workload",

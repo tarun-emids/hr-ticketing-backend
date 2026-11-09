@@ -1,31 +1,35 @@
-"""HR Desk initial schema — faithful port of the pre-Alembic schema.sql DDL.
+"""HR Desk legacy baseline — the pre-Alembic schema, exactly as existing
+databases already have it.
 
 Revision ID: 0001
 Revises: None
 Create Date: 2026-11-04
 
-Baselines the whole HR Desk schema so that from here on every schema change
-is a new Alembic revision (`make migrate-revision`), applied with
-`make migrate`.
+A BASELINE revision captures the structure every pre-Alembic database
+already runs: the historical `psql -f schema.sql` DDL with the role check
+already covering 'admin'. It deliberately does NOT contain anything this
+release adds — `users.auth_version` and the `password_reset_otps` table
+belong to revision 0002 (auth tokens + password reset), so that stamping an
+existing database at 0001 and then running `upgrade head` brings it to the
+current state instead of silently leaving columns missing.
 
 Scope notes:
   * Tables, constraints, identity/generated columns, indexes, the
-    `set_updated_at` trigger function and its three triggers — exactly what
-    schema.sql created on a fresh database, in the same order, with the same
-    object names and constraint names (Postgres defaults, e.g.
-    `users_role_check`), so a fresh Alembic database is structurally
-    identical to a fresh `psql -f schema.sql` database.
+    `set_updated_at` trigger function and its three triggers — the same
+    objects, order, and Postgres-default constraint names the original
+    schema.sql produced.
   * The stepwise repairs/renames of the historical schema.sql events
     (`.hr@` email renames, duplicate-account collapse, role-check widening)
-    are NOT in here — those healed databases created before 2026-10; a
-    database that has been stamped/migrated past 0001 was already healed.
+    are NOT in here — a database old enough to need them has already been
+    through them; a fresh one never will.
   * Personas are NOT seeded here — `scripts/provision_users.py` owns
     account creation. `scripts/seed_knowledge_base.py` and
     `scripts/seed_demo_data.py` own their data.
-  * schema.sql stays in the repository as an emergency hand-applied
-    bootstrap and as the reference for this revision; the compose db service
-    no longer mounts it. Databases that predate Alembic run
-    `make migrate-stamp` once to declare themselves current.
+  * schema.sql mirrors the CURRENT head state (0001 + later revisions,
+    auth columns included) and stays in the repository as an emergency
+    hand-applied bootstrap; the compose db service no longer mounts it.
+    Databases that already ran it stamp 0001 once via `make migrate-stamp`
+    and then `make migrate` applies everything after 0001.
 """
 
 from alembic import op
@@ -40,6 +44,9 @@ depends_on = None
 # their tables, so the SQL in this file can always be replayed top-to-bottom).
 INITIAL_SCHEMA = [
     # -- accounts ----------------------------------------------------------
+    # auth_version is NOT here — that column is release-new (revision 0002);
+    # including it would leave stamped databases without it (their logins
+    # would then fail on a column that inspecting the token expects).
     """
     CREATE TABLE users (
       id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -47,17 +54,7 @@ INITIAL_SCHEMA = [
       email         text NOT NULL UNIQUE,
       role          text NOT NULL CHECK (role IN ('employee', 'agent', 'admin')),
       password_hash text,
-      auth_version  integer NOT NULL DEFAULT 0,
       created_at    timestamptz NOT NULL DEFAULT now()
-    )
-    """,
-    """
-    CREATE TABLE password_reset_otps (
-      user_id    uuid PRIMARY KEY REFERENCES users (id) ON DELETE CASCADE,
-      otp_hash   text NOT NULL,
-      expires_at timestamptz NOT NULL,
-      attempts   integer NOT NULL DEFAULT 0 CHECK (attempts BETWEEN 0 AND 5),
-      created_at timestamptz NOT NULL DEFAULT now()
     )
     """,
     # -- tickets -----------------------------------------------------------
@@ -294,7 +291,6 @@ DOWNGRADE_STATEMENTS = [
     "DROP INDEX IF EXISTS idx_tickets_status",
     "DROP INDEX IF EXISTS idx_tickets_updated",
     "DROP TABLE IF EXISTS tickets",
-    "DROP TABLE IF EXISTS password_reset_otps",
     "DROP TABLE IF EXISTS users",
 ]
 

@@ -131,6 +131,48 @@ def get_current_admin(account: dict = Depends(get_current_account)) -> dict:
     return account
 
 
+def get_current_agent(account: dict = Depends(get_current_account)) -> dict:
+    """Staff-route guard: HR agents, plus admins working the console paths,
+    who share the agent workflow surface (assign/status/priority/auto-assign)."""
+    if account.get("role") not in ("agent", "admin"):
+        raise HTTPException(status_code=403, detail="Agent access required.")
+    return account
+
+
+def acting_user_id(account: dict, claimed: str | None = None) -> str:
+    """The data-subject id, derived from the bearer token.
+
+    A client-supplied id is honoured only when it AGREES with the token —
+    anything else is an identity forgery attempt and is rejected (403), not
+    silently used. Query/body params stay optional so callers may keep
+    sending them; the token wins either way.
+    """
+    if claimed and claimed != str(account["id"]):
+        raise HTTPException(
+            status_code=403,
+            detail="The acting user is fixed by your bearer token.",
+        )
+    return str(account["id"])
+
+
+def employee_scoped_id(account: dict, claimed: str | None = None) -> str | None:
+    """employeeId-style LIST FILTERS, for ticket listings.
+
+    Employees are hard-scoped to themselves — the filter is forced to the
+    token identity (even when the client sent none, an employee can only
+    ever see their own tickets). Agents/admins may filter by anyone, or by
+    none to list across the whole directory.
+    """
+    if account.get("role") != "employee":
+        return claimed
+    if claimed and claimed != str(account["id"]):
+        raise HTTPException(
+            status_code=403,
+            detail="Employees may only list their own tickets.",
+        )
+    return str(account["id"])
+
+
 def get_draft_service(
     drafts: DraftRepository = Depends(get_draft_repo),
     tickets: TicketRepository = Depends(get_ticket_repo),

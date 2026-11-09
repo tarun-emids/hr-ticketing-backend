@@ -55,6 +55,21 @@ class UserRepository:
             table="users",
         )
 
+    def set_password_hash_if_missing(self, user_id: str, password_hash: str) -> bool:
+        """Give a password to a provisioned account that has none yet —
+        used by the compose demo-init one-shot (never overwrites an existing
+        password; does not bump auth_version because nothing changes for
+        active sessions)."""
+        return bool(
+            run(
+                self._database,
+                "UPDATE users SET password_hash = %s WHERE id = %s AND password_hash IS NULL",
+                (password_hash, as_uuid(user_id)),
+                fetch="none",
+                table="users",
+            )
+        )
+
     def upgrade_password_hash(self, user_id: str, old_hash: str, new_hash: str) -> int:
         return run(
             self._database,

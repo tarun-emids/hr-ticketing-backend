@@ -12,7 +12,7 @@ import uuid as uuidlib
 
 import pytest
 
-from tests.conftest import U
+from tests.conftest import U, auth_headers
 
 
 def _fake_embed(vector):
@@ -76,9 +76,14 @@ def _chunk(
 
 
 def _ask(api, employee_id, question="How many PTO days carry over?"):
+    """POST /assistant/ask as the named identity: the asking employee comes
+    from the bearer token now, so callers post with a matching token when the
+    id names a known seeded user."""
+    key = {U["priya"]: "priya", U["alicia"]: "alicia"}.get(employee_id)
     return api.client.post(
         "/api/assistant/ask",
         json={"employeeId": employee_id, "question": question},
+        headers=auth_headers(key) if key else None,
     )
 
 
@@ -226,8 +231,10 @@ def test_short_question_and_unknown_viewer_are_rejected(api, grounded):
     grounded.setattr("app.rag.llm.chat", _stub_llm())
     assert _ask(api, U["priya"], "a").status_code == 422
     assert _ask(api, U["priya"], "").status_code == 422
-    assert _ask(api, "not-a-uuid").status_code == 422
-    assert _ask(api, "00000000-0000-0000-0000-000000000999").status_code == 404
+    # foreign/unknown employeeIds are identity mismatches now (403 before any
+    # employee lookup — the old 422/404 service paths are unreachable via API)
+    assert _ask(api, "not-a-uuid").status_code == 403
+    assert _ask(api, "00000000-0000-0000-0000-000000000999").status_code == 403
 
 
 # -- audit trail (saved once, never re-shown) ----------------------------------

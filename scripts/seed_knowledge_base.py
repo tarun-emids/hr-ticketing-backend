@@ -4,11 +4,12 @@ policy PDFs from scripts/knowledge_base_pdfs/, upsert one kb_documents row
 each (metadata + `data` bytea + file size) into the DATABASE_URL database
 from backend/.env.
 
-Usage — run from the repo root (run schema.sql once first; it creates the
-kb_documents table):
+Usage — run from the repo root (the migrated schema creates the kb_documents
+table — `make migrate`; or the compose kb-init one-shot):
 
     python scripts/seed_knowledge_base.py --dry-run     # plan without touching PostgreSQL
     python scripts/seed_knowledge_base.py               # upsert all documents
+    python scripts/seed_knowledge_base.py --missing-only --skip-chunks
     python scripts/seed_knowledge_base.py --only leave  # substring filter on slug
     python scripts/seed_knowledge_base.py --pdf-dir <dir>  # alternate PDF directory
 
@@ -101,6 +102,11 @@ def main() -> int:
     parser.add_argument("--only", default="", help="substring filter on slug")
     parser.add_argument("--pdf-dir", default="", help="alternate directory containing the PDFs")
     parser.add_argument(
+        "--missing-only",
+        action="store_true",
+        help="insert documents whose slugs are not already in the database",
+    )
+    parser.add_argument(
         "--skip-chunks",
         action="store_true",
         help="seed only the PDF documents; skip embedding paragraphs for the assistant",
@@ -135,6 +141,8 @@ def main() -> int:
         with conn.cursor() as cur:
             existing = {row[0] for row in cur.execute("SELECT slug FROM kb_documents").fetchall()}
             for doc, pdf_bytes, size in plan:
+                if args.missing_only and doc["slug"] in existing:
+                    continue
                 cur.execute(
                     UPSERT_SQL,
                     (

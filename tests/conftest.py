@@ -419,16 +419,21 @@ def api(monkeypatch):
     fake.seed()
     monkeypatch.setattr(app_config, "RETRY_MAX_ATTEMPTS", 1)
     monkeypatch.setattr(app_config, "get_database", lambda: fake)
-    from app.services.tokens import create_access_token
-
-    client = TestClient(
-        app_main.app,
-        headers={
-            "Authorization": f"Bearer {create_access_token({'id': U['priya'], 'auth_version': 0})}"
-        },
-    )
+    client = TestClient(app_main.app, headers=auth_headers("priya"))
     yield SimpleNamespace(client=client, fake=fake, U=U)
     fake.close()
+
+
+def auth_headers(user_key: str) -> dict:
+    """Mint a valid bearer token for a seeded account, for per-request use:
+    api.client.get(path, headers=auth_headers('alicia')). The offline token
+    path still goes through get_current_account (existing id, auth_version
+    0 matches the seeded rows) but skips login entirely."""
+    from app.services.tokens import create_access_token
+
+    return {
+        "Authorization": f"Bearer {create_access_token({'id': U[user_key], 'auth_version': 0})}"
+    }
 
 
 def ticket_payload(employee_id, **over):

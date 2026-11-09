@@ -47,9 +47,12 @@ def test_signed_url_for_stored_attachment(api):
 
 
 def test_signed_url_ttl_clamped(api):
+    from tests.conftest import auth_headers
+
+    marcus = auth_headers("marcus")  # TKT-102 is Marcus' ticket
     upload(api, "TKT-102")
-    low = api.client.get("/api/tickets/TKT-102/attachment", params={"ttl": 5})
-    high = api.client.get("/api/tickets/TKT-102/attachment", params={"ttl": 999999})
+    low = api.client.get("/api/tickets/TKT-102/attachment", params={"ttl": 5}, headers=marcus)
+    high = api.client.get("/api/tickets/TKT-102/attachment", params={"ttl": 999999}, headers=marcus)
     assert low.json()["expiresInSeconds"] == 60
     assert high.json()["expiresInSeconds"] == 86400
 

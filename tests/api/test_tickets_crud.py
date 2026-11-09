@@ -1,6 +1,6 @@
 import uuid as uuidlib
 
-from tests.conftest import U, ticket_payload
+from tests.conftest import U, auth_headers, ticket_payload
 
 
 def test_create_ticket_returns_frontend_shape(api):
@@ -72,14 +72,19 @@ def test_create_ticket_validation_errors(api):
     assert "detail" in r.json()
 
 
-def test_create_ticket_unknown_employee(api):
+def test_create_ticket_identity_mismatch_rejected(api):
+    """A body employeeId that disagrees with the bearer token must never be
+    honoured (any signed-in user can only ever file as themselves)."""
     r = api.client.post("/api/tickets", json=ticket_payload("00000000-0000-0000-0000-999999999999"))
-    assert r.status_code == 422
-    assert "does not match a known user" in r.json()["detail"]
+    assert r.status_code == 403
 
 
 def test_create_ticket_agent_not_allowed_as_employee(api):
-    r = api.client.post("/api/tickets", json=ticket_payload(U["alicia"]))
+    """The service-side role guard survives: a signed-in agent filing their
+    own ticket id is rejected because tickets belong to employees."""
+    r = api.client.post(
+        "/api/tickets", json=ticket_payload(U["alicia"]), headers=auth_headers("alicia")
+    )
     assert r.status_code == 422
     assert "role 'employee'" in r.json()["detail"]
 
@@ -100,8 +105,11 @@ def test_get_ticket_by_numeric_key(api):
 
 
 def test_get_ticket_by_uuid(api):
-    created = api.client.post("/api/tickets", json=ticket_payload(U["tomas"])).json()
-    r = api.client.get(f"/api/tickets/{created['uuid']}")
+    headers = auth_headers("tomas")
+    created = api.client.post(
+        "/api/tickets", json=ticket_payload(U["tomas"]), headers=headers
+    ).json()
+    r = api.client.get(f"/api/tickets/{created['uuid']}", headers=headers)
     assert r.status_code == 200
     assert r.json()["uuid"] == created["uuid"]
 
@@ -113,9 +121,11 @@ def test_get_ticket_missing(api):
 
 
 def test_get_ticket_returns_full_thread_with_replies(api):
+    headers = auth_headers("marcus")
     r = api.client.post(
         "/api/tickets/TKT-102/replies",
         json={"authorId": U["marcus"], "text": "Actually I need two days in June."},
+        headers=headers,
     )
     assert r.status_code == 200
     t = r.json()
@@ -126,39 +136,58 @@ def test_get_ticket_returns_full_thread_with_replies(api):
 
 
 def test_list_tickets_newest_first(api):
-    api.client.post("/api/tickets", json=ticket_payload(U["dana"]))
-    r = api.client.get("/api/tickets")
+    api.client.post("/api/tickets", json=ticket_payload(U["priya"]))
+    r = api.client.get("/api/tickets", headers=auth_headers("alicia"))
     ids = [t["id"] for t in r.json()]
     assert all(t["turns"] == [] for t in r.json())
     assert ids == ["TKT-104", "TKT-103", "TKT-102", "TKT-101"]
-    fetched = api.client.get(f"/api/tickets/{ids[0]}").json()
-    assert fetched["employeeId"] == U["dana"]
+    fetched = api.client.get(f"/api/tickets/{ids[0]}", headers=auth_headers("alicia")).json()
+    assert fetched["employeeId"] == U["priya"]
+
+
+def test_list_tickets_employee_hard_scoped_to_self(api):
+    """Employees see ONLY their own tickets — even without a filter, and a
+    foreign employeeId is rejected instead of honoured."""
+    api.client.post("/api/tickets", json=ticket_payload(U["priya"]))
+    scoped = [t["id"] for t in api.client.get("/api/tickets").json()]
+    assert scoped == ["TKT-104", "TKT-101"]  # created above + seeded priya row
+
+    r = api.client.get("/api/tickets", params={"employeeId": U["marcus"]})
+    assert r.status_code == 403
+
+    r = api.client.get(
+        "/api/tickets", params={"employeeId": U["priya"]}, headers=auth_headers("alicia")
+    )
+    assert [t["id"] for t in r.json()] == ["TKT-104", "TKT-101"]
 
 
 def test_list_tickets_filters(api):
-    r = api.client.get("/api/tickets", params={"status": "Resolved"})
+    # staff token: agents may filter by anyone (or nobody) across the directory
+    alicia = auth_headers("alicia")
+    r = api.client.get("/api/tickets", params={"status": "Resolved"}, headers=alicia)
     assert [t["id"] for t in r.json()] == ["TKT-103"]
 
-    r = api.client.get("/api/tickets", params={"category": "Leave"})
+    r = api.client.get("/api/tickets", params={"category": "Leave"}, headers=alicia)
     assert [t["id"] for t in r.json()] == ["TKT-102"]
 
-    r = api.client.get("/api/tickets", params={"priority": "Urgent"})
+    r = api.client.get("/api/tickets", params={"priority": "Urgent"}, headers=alicia)
     assert [t["id"] for t in r.json()] == ["TKT-103"]
 
-    r = api.client.get("/api/tickets", params={"employeeId": U["marcus"]})
+    r = api.client.get("/api/tickets", params={"employeeId": U["marcus"]}, headers=alicia)
     assert [t["id"] for t in r.json()] == ["TKT-102"]
 
-    r = api.client.get("/api/tickets", params={"assigneeId": U["alicia"]})
+    r = api.client.get("/api/tickets", params={"assigneeId": U["alicia"]}, headers=alicia)
     assert [t["id"] for t in r.json()] == ["TKT-102"]
 
-    r = api.client.get("/api/tickets", params={"unassigned": "true"})
+    r = api.client.get("/api/tickets", params={"unassigned": "true"}, headers=alicia)
     assert set(t["id"] for t in r.json()) == {"TKT-101"}
 
-    r = api.client.get("/api/tickets", params={"q": "carryover"})
+    r = api.client.get("/api/tickets", params={"q": "carryover"}, headers=alicia)
     assert [t["id"] for t in r.json()] == ["TKT-102"]
 
 
 def test_list_tickets_limit(api):
-    r = api.client.get("/api/tickets", params={"limit": 1})
+    alicia = auth_headers("alicia")
+    r = api.client.get("/api/tickets", params={"limit": 1}, headers=alicia)
     assert len(r.json()) == 1
     assert r.json()[0]["id"] == "TKT-103"
