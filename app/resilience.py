@@ -49,6 +49,13 @@ class CircuitOpenError(Exception):
         self.name = name
 
 
+class MailDeliveryError(Exception):
+    """SMTP failure whose message contains no recipient or message data."""
+
+    def __init__(self):
+        super().__init__("Mailpit SMTP delivery failed")
+
+
 class CircuitBreaker:
     """Thread-safe closed/open/half-open breaker around zero-arg callables.
 
@@ -196,10 +203,18 @@ assistant_breaker = CircuitBreaker(
     recovery_timeout=app_config.BREAKER_RECOVERY_SECONDS,
 )
 
+mail_breaker = CircuitBreaker(
+    "mailpit",
+    failure_threshold=app_config.BREAKER_FAILURE_THRESHOLD,
+    recovery_timeout=app_config.BREAKER_RECOVERY_SECONDS,
+    is_failure=lambda exc: isinstance(exc, MailDeliveryError),
+)
+
 
 def breakers_snapshot() -> dict:
     """The named breaker state returned by GET /health/deps."""
     return {
         "db": db_breaker.snapshot(),
         "assistant": assistant_breaker.snapshot(),
+        "mailpit": mail_breaker.snapshot(),
     }

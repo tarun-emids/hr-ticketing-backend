@@ -39,9 +39,14 @@ Business rules only: no database access, no HTTP beyond domain responses.
 
 ## Authentication (AuthService)
 
-- Login loads the account's scrypt password hash through `UserRepository`;
-  never log passwords, hashes, or return `password_hash` in an API response.
-- Use the generic invalid-credentials response for missing users, unprovisioned
-  accounts, and wrong passwords.
-- Password provisioning is an operations script; there is no public signup.
+- Login verifies bcrypt password hashes and returns a short-lived bearer
+  token. Legacy scrypt hashes are transparently upgraded after a successful
+  login where bcrypt's 72-byte input limit permits it.
+- Never log passwords, OTPs, hashes, or return `password_hash` in an API
+  response. Use generic invalid-credentials responses.
+- Passwords and reset OTPs use bcrypt. Account provisioning is admin-only;
+  there is no public signup. Reset codes are one-time, expire, and have a
+  five-attempt limit. Password changes invalidate existing tokens.
+- Password-reset email is sent through Mailpit SMTP. Keep delivery failures
+  visible without revealing whether the requested email is registered.
   PostgreSQL errors pass through the shared database breaker.

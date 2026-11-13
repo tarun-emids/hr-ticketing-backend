@@ -17,6 +17,13 @@ load_dotenv(BASE_DIR / ".env")
 
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 ATTACHMENT_SIGNING_KEY = os.getenv("ATTACHMENT_SIGNING_KEY", "")
+AUTH_SIGNING_KEY = os.getenv("AUTH_SIGNING_KEY", "")
+AUTH_TOKEN_TTL_SECONDS = int(os.getenv("AUTH_TOKEN_TTL_SECONDS", "3600"))
+PASSWORD_RESET_OTP_TTL_SECONDS = int(os.getenv("PASSWORD_RESET_OTP_TTL_SECONDS", "600"))
+MAILPIT_HOST = os.getenv("MAILPIT_HOST", "127.0.0.1")
+MAILPIT_PORT = int(os.getenv("MAILPIT_PORT", "1025"))
+MAILPIT_FROM = os.getenv("MAILPIT_FROM", "noreply@hrdesk.local")
+MAILPIT_TIMEOUT_SECONDS = float(os.getenv("MAILPIT_TIMEOUT_SECONDS", "5"))
 CORS_ORIGINS = [
     origin.strip()
     for origin in os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",")
@@ -29,17 +36,6 @@ DB_POOL_TIMEOUT = float(os.getenv("DB_POOL_TIMEOUT", "5"))
 RETRY_MAX_ATTEMPTS = int(os.getenv("RETRY_MAX_ATTEMPTS", "3"))
 RETRY_BACKOFF_INITIAL_S = float(os.getenv("RETRY_BACKOFF_INITIAL_S", "0.5"))
 RETRY_BACKOFF_MAX_S = float(os.getenv("RETRY_BACKOFF_MAX_S", "2"))
-SMTP_HOST = os.getenv("SMTP_HOST", "localhost")
-SMTP_PORT = int(os.getenv("SMTP_PORT", "1025"))
-SMTP_FROM = os.getenv("SMTP_FROM", "hrdesk@localhost")
-SMTP_STARTTLS = os.getenv("SMTP_STARTTLS", "false").strip().lower() in (
-    "true",
-    "1",
-    "yes",
-    "on",
-)
-SMTP_USERNAME = os.getenv("SMTP_USERNAME", "")
-SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 
 BREAKER_FAILURE_THRESHOLD = int(os.getenv("CIRCUIT_BREAKER_FAILURE_THRESHOLD", "5"))
 BREAKER_RECOVERY_SECONDS = float(os.getenv("CIRCUIT_BREAKER_RECOVERY_SECONDS", "30"))

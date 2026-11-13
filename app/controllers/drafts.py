@@ -5,12 +5,18 @@ trio (hrdesk.flow) — ``drafts.attachment.*`` for the attachment routes. Safe
 metadata only: employee/draft uuids, which optional patch fields were set
 (field NAMES from the validated DTO, never values), attachment sizes and
 content types. Draft subjects/descriptions(/file names) are never logged.
+
+Ownership comes from the bearer token: a client employeeId that disagrees
+with the token identity is rejected (403) instead of honoured, so drafts of
+one employee can never be handled by another user's session.
 """
+
+from typing import Optional
 
 from fastapi import APIRouter, Depends, Request, UploadFile
 
 from app.config import SIGNED_URL_TTL
-from app.deps import get_draft_service
+from app.deps import acting_user_id, get_current_account, get_draft_service
 from app.models import DraftCreate, DraftSubmit, DraftUpdate
 from app.observability import flow_operation
 from app.services.draft_service import DraftService
@@ -21,23 +27,34 @@ STATUS_NO_BODY = 204
 
 
 @router.get("")
-def list_drafts(employeeId: str, svc: DraftService = Depends(get_draft_service)):
+def list_drafts(
+    employeeId: Optional[str] = None,
+    account: dict = Depends(get_current_account),
+    svc: DraftService = Depends(get_draft_service),
+):
     """GET /drafts?employeeId=... — drafts belonging to one employee."""
+    employee_id = acting_user_id(account, employeeId)
     with flow_operation(
         "drafts.list",
         operation="drafts.list",
         method="GET",
         path="/api/drafts",
-        employee_id=employeeId,
+        employee_id=employee_id,
     ) as op:
-        result = svc.list_drafts(employeeId)
+        result = svc.list_drafts(employee_id)
         op["count"] = len(result)
         return result
 
 
 @router.post("", status_code=201)
-def create_draft(payload: DraftCreate, svc: DraftService = Depends(get_draft_service)):
-    """POST /drafts — save an incomplete ticket form."""
+def create_draft(
+    payload: DraftCreate,
+    account: dict = Depends(get_current_account),
+    svc: DraftService = Depends(get_draft_service),
+):
+    """POST /drafts — save an incomplete ticket form. The draft belongs to
+    the token identity."""
+    employee_id = acting_user_id(account, payload.employee_id)
     with flow_operation(
         "drafts.create",
         operation="drafts.create",
@@ -45,39 +62,47 @@ def create_draft(payload: DraftCreate, svc: DraftService = Depends(get_draft_ser
         path="/api/drafts",
         category=payload.category,
         priority=payload.priority,
+        employee_id=employee_id,
     ) as op:
         result = svc.create_draft(
-            employee_id=payload.employee_id,
+            employee_id=employee_id,
             category=payload.category,
             subject=payload.subject,
             description=payload.description,
             priority=payload.priority,
         )
         op["draft_id"] = result.get("id")  # serialized draft: uuid (no TKT ref yet)
-        op["employee_id"] = payload.employee_id
         return result
 
 
 @router.get("/{draft_id}")
-def get_draft(draft_id: str, employeeId: str, svc: DraftService = Depends(get_draft_service)):
+def get_draft(
+    draft_id: str,
+    employeeId: Optional[str] = None,
+    account: dict = Depends(get_current_account),
+    svc: DraftService = Depends(get_draft_service),
+):
+    employee_id = acting_user_id(account, employeeId)
     with flow_operation(
         "drafts.get",
         operation="drafts.get",
         method="GET",
         path=f"/api/drafts/{draft_id}",
-        employee_id=employeeId,
+        employee_id=employee_id,
     ) as op:
         op["draft_id"] = draft_id
-        return svc.get_draft(draft_id, employeeId)
+        return svc.get_draft(draft_id, employee_id)
 
 
 @router.patch("/{draft_id}")
 def update_draft(
     draft_id: str,
-    employeeId: str,
     payload: DraftUpdate,
+    employeeId: Optional[str] = None,
+    account: dict = Depends(get_current_account),
     svc: DraftService = Depends(get_draft_service),
 ):
+    employee_id = acting_user_id(account, employeeId)
     patch = payload.model_dump(exclude_unset=True, exclude_none=True)
     # field NAMES only — the draft text itself must never reach a log
     patch_fields = sorted(patch)
@@ -86,39 +111,50 @@ def update_draft(
         operation="drafts.update",
         method="PATCH",
         path=f"/api/drafts/{draft_id}",
-        employee_id=employeeId,
+        employee_id=employee_id,
         draft_id=draft_id,
         patch_fields=patch_fields,
     ):
-        return svc.update_draft(draft_id, employeeId, patch)
+        return svc.update_draft(draft_id, employee_id, patch)
 
 
 @router.delete("/{draft_id}", status_code=STATUS_NO_BODY)
-def delete_draft(draft_id: str, employeeId: str, svc: DraftService = Depends(get_draft_service)):
+def delete_draft(
+    draft_id: str,
+    employeeId: Optional[str] = None,
+    account: dict = Depends(get_current_account),
+    svc: DraftService = Depends(get_draft_service),
+):
+    employee_id = acting_user_id(account, employeeId)
     with flow_operation(
         "drafts.delete",
         operation="drafts.delete",
         method="DELETE",
         path=f"/api/drafts/{draft_id}",
-        employee_id=employeeId,
+        employee_id=employee_id,
         draft_id=draft_id,
     ):
-        svc.delete_draft(draft_id, employeeId)
+        svc.delete_draft(draft_id, employee_id)
 
 
 @router.post("/{draft_id}/submit")
 def submit_draft(
-    draft_id: str, payload: DraftSubmit, svc: DraftService = Depends(get_draft_service)
+    draft_id: str,
+    payload: DraftSubmit,
+    account: dict = Depends(get_current_account),
+    svc: DraftService = Depends(get_draft_service),
 ):
-    """Validate and convert the saved draft into a normal ticket."""
+    """Validate and convert the saved draft into a normal ticket. The filing
+    employee is the token identity."""
+    employee_id = acting_user_id(account, payload.employee_id)
     with flow_operation(
         "drafts.submit",
         operation="drafts.submit",
         method="POST",
         path=f"/api/drafts/{draft_id}/submit",
-        employee_id=payload.employee_id,
+        employee_id=employee_id,
     ) as op:
-        result = svc.submit_draft(draft_id, employee_id=payload.employee_id)
+        result = svc.submit_draft(draft_id, employee_id=employee_id)
         op["draft_id"] = draft_id
         op["ticket_ref"] = result.get("id")  # the new TKT-ref
         return result
@@ -127,24 +163,26 @@ def submit_draft(
 @router.post("/{draft_id}/attachment")
 def upload_draft_attachment(
     draft_id: str,
-    employeeId: str,
     file: UploadFile,
+    employeeId: Optional[str] = None,
+    account: dict = Depends(get_current_account),
     svc: DraftService = Depends(get_draft_service),
 ):
+    employee_id = acting_user_id(account, employeeId)
     data = file.file.read()
     with flow_operation(
         "drafts.attachment.upload",
         operation="drafts.attachment_upload",
         method="POST",
         path=f"/api/drafts/{draft_id}/attachment",
-        employee_id=employeeId,
+        employee_id=employee_id,
         draft_id=draft_id,
         size_bytes=len(data),
         content_type=file.content_type,
     ):
         return svc.upload_attachment(
             draft_id,
-            employeeId,
+            employee_id,
             filename=file.filename,
             content_type=file.content_type,
             data=data,
@@ -154,37 +192,41 @@ def upload_draft_attachment(
 @router.delete("/{draft_id}/attachment", status_code=STATUS_NO_BODY)
 def delete_draft_attachment(
     draft_id: str,
-    employeeId: str,
+    employeeId: Optional[str] = None,
+    account: dict = Depends(get_current_account),
     svc: DraftService = Depends(get_draft_service),
 ):
+    employee_id = acting_user_id(account, employeeId)
     with flow_operation(
         "drafts.attachment.delete",
         operation="drafts.attachment_delete",
         method="DELETE",
         path=f"/api/drafts/{draft_id}/attachment",
-        employee_id=employeeId,
+        employee_id=employee_id,
         draft_id=draft_id,
     ):
-        svc.delete_attachment(draft_id, employeeId)
+        svc.delete_attachment(draft_id, employee_id)
 
 
 @router.get("/{draft_id}/attachment")
 def draft_attachment_url(
     draft_id: str,
-    employeeId: str,
     request: Request,
+    employeeId: Optional[str] = None,
     ttl: int = SIGNED_URL_TTL,
+    account: dict = Depends(get_current_account),
     svc: DraftService = Depends(get_draft_service),
 ):
+    employee_id = acting_user_id(account, employeeId)
     with flow_operation(
         "drafts.attachment.url",
         operation="drafts.attachment_url",
         method="GET",
         path=f"/api/drafts/{draft_id}/attachment",
-        employee_id=employeeId,
+        employee_id=employee_id,
         draft_id=draft_id,
     ) as event:
-        result = svc.attachment_url(draft_id, employeeId, ttl)
+        result = svc.attachment_url(draft_id, employee_id, ttl)
         result["url"] = f"{str(request.base_url).rstrip('/')}{result['url']}"
         event["expires_in_seconds"] = result["expiresInSeconds"]
         return result

@@ -184,7 +184,7 @@ class NotificationService:
 
     def require_user(self, user_id: str) -> dict:
         """Edge guard used by every /notifications endpoint: the acting user
-        must exist (mock-auth stand-in for a token in the final auth step)."""
+        must exist; API routes additionally require a valid bearer token."""
         user = self._users.get_by_id(user_id)
         if not user:
             raise HTTPException(status_code=422, detail="userId does not match a known user")

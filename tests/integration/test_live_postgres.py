@@ -18,7 +18,7 @@ def test_live_users_agents_meta(live):
     assert r.status_code == 200
     users = r.json()
     roles = {u["role"] for u in users}
-    assert roles == {"employee", "agent"}
+    assert roles == {"employee", "agent", "admin"}
 
     agents = live["client"].get("/api/users/agents").json()
     assert all(a["role"] == "agent" for a in agents) and len(agents) >= 3

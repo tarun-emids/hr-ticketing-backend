@@ -8,7 +8,8 @@ The pool is resolved here via `app.config.get_database()` at call time
 and every repository in one place.
 """
 
-from fastapi import Depends
+from fastapi import Depends, HTTPException
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from psycopg_pool import ConnectionPool
 
 from app import config as app_config
@@ -24,6 +25,7 @@ from app.repositories.draft_repository import DraftRepository
 from app.repositories.feedback_repository import FeedbackRepository
 from app.repositories.kb_repository import KbRepository
 from app.repositories.notification_repository import NotificationRepository
+from app.repositories.password_reset_repository import PasswordResetRepository
 from app.repositories.ticket_repository import TicketRepository
 from app.repositories.user_repository import UserRepository
 from app.services.auth_service import AuthService
@@ -33,6 +35,7 @@ from app.services.kb_service import KbService
 from app.services.log_ingest_service import LogIngestService
 from app.services.notification_service import NotificationService
 from app.services.ticket_service import TicketService
+from app.services.tokens import decode_access_token
 from app.services.user_service import UserService
 
 
@@ -107,8 +110,81 @@ def get_user_service(users: UserRepository = Depends(get_user_repo)) -> UserServ
     return UserService(users)
 
 
-def get_auth_service(users: UserRepository = Depends(get_user_repo)) -> AuthService:
-    return AuthService(users)
+def get_password_reset_repo(
+    database: ConnectionPool = Depends(get_database),
+) -> PasswordResetRepository:
+    return PasswordResetRepository(database)
+
+
+def get_auth_service_with_reset(
+    users: UserRepository = Depends(get_user_repo),
+    resets: PasswordResetRepository = Depends(get_password_reset_repo),
+) -> AuthService:
+    return AuthService(users, resets)
+
+
+_bearer = HTTPBearer(auto_error=False)
+
+
+def get_current_account(
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
+    users: UserRepository = Depends(get_user_repo),
+) -> dict:
+    if not credentials or credentials.scheme.lower() != "bearer":
+        raise HTTPException(status_code=401, detail="Authentication required.")
+    token = decode_access_token(credentials.credentials)
+    account = users.get_by_id(token["sub"])
+    if not account or int(account.get("auth_version") or 0) != token["ver"]:
+        raise HTTPException(status_code=401, detail="Invalid or expired access token.")
+    return account
+
+
+def get_current_admin(account: dict = Depends(get_current_account)) -> dict:
+    if account.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required.")
+    return account
+
+
+def get_current_agent(account: dict = Depends(get_current_account)) -> dict:
+    """Staff-route guard: HR agents, plus admins working the console paths,
+    who share the agent workflow surface (assign/status/priority/auto-assign)."""
+    if account.get("role") not in ("agent", "admin"):
+        raise HTTPException(status_code=403, detail="Agent access required.")
+    return account
+
+
+def acting_user_id(account: dict, claimed: str | None = None) -> str:
+    """The data-subject id, derived from the bearer token.
+
+    A client-supplied id is honoured only when it AGREES with the token —
+    anything else is an identity forgery attempt and is rejected (403), not
+    silently used. Query/body params stay optional so callers may keep
+    sending them; the token wins either way.
+    """
+    if claimed and claimed != str(account["id"]):
+        raise HTTPException(
+            status_code=403,
+            detail="The acting user is fixed by your bearer token.",
+        )
+    return str(account["id"])
+
+
+def employee_scoped_id(account: dict, claimed: str | None = None) -> str | None:
+    """employeeId-style LIST FILTERS, for ticket listings.
+
+    Employees are hard-scoped to themselves — the filter is forced to the
+    token identity (even when the client sent none, an employee can only
+    ever see their own tickets). Agents/admins may filter by anyone, or by
+    none to list across the whole directory.
+    """
+    if account.get("role") != "employee":
+        return claimed
+    if claimed and claimed != str(account["id"]):
+        raise HTTPException(
+            status_code=403,
+            detail="Employees may only list their own tickets.",
+        )
+    return str(account["id"])
 
 
 def get_draft_service(

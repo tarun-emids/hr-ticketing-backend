@@ -1,6 +1,8 @@
 import io
 
-from tests.conftest import U
+from tests.conftest import U, auth_headers
+
+ALICIA = auth_headers("alicia")
 
 
 def items(r):
@@ -13,12 +15,15 @@ def upload(api, tid, filename="note.pdf", content=b"PDF-ish bytes", content_type
     return api.client.post(
         f"/api/tickets/{tid}/attachment",
         params={"viewerId": U["alicia"]},
+        headers=ALICIA,
         files={"file": (filename, io.BytesIO(content), content_type)},
     )
 
 
 def test_get_attachment_without_attachment_404(api):
-    r = api.client.get("/api/tickets/TKT-101/attachment", params={"viewerId": U["alicia"]})
+    r = api.client.get(
+        "/api/tickets/TKT-101/attachment", params={"viewerId": U["alicia"]}, headers=ALICIA
+    )
     assert r.status_code == 404
 
 
@@ -42,9 +47,13 @@ def test_signed_url_for_stored_attachment(api):
             "description": "My badge stopped working at the lobby reader and HR needs a replacement.",
         },
     )
-    tid = items(api.client.get("/api/tickets", params={"viewerId": U["alicia"]}))[0]["id"]
+    tid = items(api.client.get("/api/tickets", params={"viewerId": U["alicia"]}, headers=ALICIA))[0][
+        "id"
+    ]
     upload(api, tid, content=b"abc")
-    r = api.client.get(f"/api/tickets/{tid}/attachment", params={"viewerId": U["alicia"]})
+    r = api.client.get(
+        f"/api/tickets/{tid}/attachment", params={"viewerId": U["alicia"]}, headers=ALICIA
+    )
     assert r.status_code == 200
     body = r.json()
     assert body["name"] == "note.pdf"
@@ -54,13 +63,10 @@ def test_signed_url_for_stored_attachment(api):
 
 
 def test_signed_url_ttl_clamped(api):
+    marcus = auth_headers("marcus")  # TKT-102 is Marcus' ticket
     upload(api, "TKT-102")
-    low = api.client.get(
-        "/api/tickets/TKT-102/attachment", params={"ttl": 5, "viewerId": U["alicia"]}
-    )
-    high = api.client.get(
-        "/api/tickets/TKT-102/attachment", params={"ttl": 999999, "viewerId": U["alicia"]}
-    )
+    low = api.client.get("/api/tickets/TKT-102/attachment", params={"ttl": 5}, headers=marcus)
+    high = api.client.get("/api/tickets/TKT-102/attachment", params={"ttl": 999999}, headers=marcus)
     assert low.json()["expiresInSeconds"] == 60
     assert high.json()["expiresInSeconds"] == 86400
 
@@ -70,6 +76,7 @@ def test_reupload_replaces_previous_attachment(api):
     r = api.client.post(
         "/api/tickets/TKT-101/attachment",
         params={"viewerId": U["alicia"]},
+        headers=ALICIA,
         files={"file": ("two.txt", io.BytesIO(b"second payload"), "text/plain")},
     )
     t = r.json()
@@ -83,7 +90,7 @@ def test_reupload_replaces_previous_attachment(api):
 def test_signed_url_downloads_database_attachment(api):
     upload(api, "TKT-101", content=b"private database attachment")
     url = api.client.get(
-        "/api/tickets/TKT-101/attachment", params={"viewerId": U["alicia"]}
+        "/api/tickets/TKT-101/attachment", params={"viewerId": U["alicia"]}, headers=ALICIA
     ).json()["url"]
     response = api.client.get(url)
     assert response.status_code == 200

@@ -10,7 +10,7 @@ at the module boundary (no network, no tokens), storage handled by FakeStorage.
 import logging
 import re
 
-from tests.conftest import U
+from tests.conftest import U, auth_headers
 
 SUBJECT = "App wide coverage subject"
 DESCRIPTION = "This description text must never appear inside any emitted flow record."
@@ -108,14 +108,12 @@ def test_users_listing_events_with_counts(api, caplog):
 
 
 def test_ticket_list_events_never_log_search_text(api, caplog):
+    alicia = auth_headers("alicia")
     with caplog.at_level(logging.INFO, logger="hrdesk.flow"):
         res = api.client.get(
             "/api/tickets",
-            params={
-                "status": "Resolved",
-                "q": "equipment",
-                "viewerId": U["alicia"],
-            },  # matches seeded TKT-103
+            params={"status": "Resolved", "q": "equipment"},  # matches seeded TKT-103
+            headers=alicia,
         )
     assert res.status_code == 200
     events = _flow_records(caplog)
@@ -129,9 +127,10 @@ def test_ticket_list_events_never_log_search_text(api, caplog):
 
 
 def test_ticket_get_events(api, caplog):
+    alicia = auth_headers("alicia")
     with caplog.at_level(logging.INFO, logger="hrdesk.flow"):
-        ok = api.client.get("/api/tickets/TKT-102", params={"viewerId": U["alicia"]})
-        missing = api.client.get("/api/tickets/TKT-404", params={"viewerId": U["alicia"]})
+        ok = api.client.get("/api/tickets/TKT-102", headers=alicia)
+        missing = api.client.get("/api/tickets/TKT-404", headers=alicia)
     assert ok.status_code == 200 and missing.status_code == 404
     events = _flow_records(caplog)
     assert _names(events) == [
@@ -153,7 +152,7 @@ def test_status_update_full_chain(api, caplog):
     with caplog.at_level(logging.INFO, logger="hrdesk.flow"):
         res = api.client.patch(
             "/api/tickets/TKT-101/status",
-            headers={"X-Request-ID": "appflow-status-0001"},
+            headers={**auth_headers("ben"), "X-Request-ID": "appflow-status-0001"},
             json={"status": "Resolved", "actorId": U["ben"]},
         )
     assert res.status_code == 200
@@ -183,8 +182,8 @@ def test_assign_flow_emits_reply_and_update_events(api, caplog):
     with caplog.at_level(logging.INFO, logger="hrdesk.flow"):
         res = api.client.patch(
             "/api/tickets/TKT-101/assignee",
-            params={"viewerId": U["ben"]},
             json={"assigneeId": U["alicia"]},
+            headers=auth_headers("alicia"),
         )
     assert res.status_code == 200
     events = _flow_records(caplog)
@@ -207,16 +206,13 @@ def test_assign_flow_emits_reply_and_update_events(api, caplog):
 
 def test_reassigning_the_same_agent_does_not_notify(api, caplog):
     """Re-picking the current assignee stays quiet (deliver rows absent)."""
+    alicia = auth_headers("alicia")
     with caplog.at_level(logging.INFO, logger="hrdesk.flow"):
         first = api.client.patch(
-            "/api/tickets/TKT-101/assignee",
-            params={"viewerId": U["ben"]},
-            json={"assigneeId": U["alicia"]},
+            "/api/tickets/TKT-101/assignee", json={"assigneeId": U["alicia"]}, headers=alicia
         )
         second = api.client.patch(
-            "/api/tickets/TKT-101/assignee",
-            params={"viewerId": U["ben"]},
-            json={"assigneeId": U["alicia"]},
+            "/api/tickets/TKT-101/assignee", json={"assigneeId": U["alicia"]}, headers=alicia
         )
     assert first.status_code == 200 and second.status_code == 200
     events = _flow_records(caplog)
@@ -234,7 +230,7 @@ def test_reassigning_the_same_agent_does_not_notify(api, caplog):
 
 def test_auto_assign_logs_selection_milestone(api, caplog):
     with caplog.at_level(logging.INFO, logger="hrdesk.flow"):
-        res = api.client.post("/api/tickets/TKT-101/auto-assign", params={"viewerId": U["ben"]})
+        res = api.client.post("/api/tickets/TKT-101/auto-assign", headers=auth_headers("alicia"))
     assert res.status_code == 200
     events = _flow_records(caplog)
     names = _names(events)
@@ -251,8 +247,8 @@ def test_priority_update_events(api, caplog):
     with caplog.at_level(logging.INFO, logger="hrdesk.flow"):
         res = api.client.patch(
             "/api/tickets/TKT-101/priority",
-            params={"viewerId": U["ben"]},
             json={"priority": "Urgent"},
+            headers=auth_headers("alicia"),
         )
     assert res.status_code == 200
     assert _names(_flow_records(caplog)) == [
@@ -265,7 +261,7 @@ def test_priority_update_events(api, caplog):
 
 def test_agents_workload_events(api, caplog):
     with caplog.at_level(logging.INFO, logger="hrdesk.flow"):
-        res = api.client.get("/api/agents/workload", params={"viewerId": U["ben"]})
+        res = api.client.get("/api/agents/workload", headers=auth_headers("alicia"))
     assert res.status_code == 200
     events = _flow_records(caplog)
     assert _names(events) == ["agents.workload.started", "agents.workload.completed"]
@@ -411,13 +407,15 @@ def test_draft_submit_validation_failure(api, caplog):
 
 
 def test_ticket_attachment_upload_and_url_events(api, caplog):
+    # TKT-102 is Marcus' ticket — fetch as the owner (or as staff)
+    marcus = auth_headers("marcus")
     with caplog.at_level(logging.INFO, logger="hrdesk.flow"):
         upload = api.client.post(
             "/api/tickets/TKT-102/attachment",
-            params={"viewerId": U["ben"]},
             files={"file": ("employee-payslip.pdf", b"pdf-bytes-here", "application/pdf")},
+            headers=marcus,
         )
-        url = api.client.get("/api/tickets/TKT-102/attachment", params={"viewerId": U["ben"]})
+        url = api.client.get("/api/tickets/TKT-102/attachment", headers=marcus)
     assert upload.status_code == 200 and url.status_code == 200
     events = _flow_records(caplog)
     names = _names(events)

@@ -7,7 +7,9 @@ services:
       POSTGRES_PASSWORD: local-development-only
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./schema.sql:/docker-entrypoint-initdb.d/001-schema.sql:ro
+    # NOTE: schema.sql is intentionally NOT mounted into
+    # /docker-entrypoint-initdb.d any more — Alembic owns the schema now
+    # (see README "Schema migrations (Alembic)"; `make migrate` after `make up`).
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U hrdesk -d hrdesk"]
       interval: 5s
@@ -23,6 +25,23 @@ services:
       - "127.0.0.1:1025:1025"
     restart: unless-stopped
 
+  # One-shot: bring the schema to the latest Alembic revision before anything
+  # touches the database. Idempotent — after the first run it is a no-op that
+  # only re-reads alembic_version; later revisions land on `make migrate`.
+  migrate-init:
+    build:
+      context: .
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      DATABASE_URL: postgresql://hrdesk:local-development-only@db:5432/hrdesk
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  # One-shot (PR #12): password-initialize the demo personas that lack a
+  # password — never touches existing passwords. Skips quietly when the
+  # personas are not yet provisioned.
   demo-init:
     build:
       context: .
@@ -31,10 +50,13 @@ services:
       DATABASE_URL: postgresql://hrdesk:local-development-only@db:5432/hrdesk
       HR_DESK_TEMP_PASSWORD: ${HR_DESK_TEMP_PASSWORD:-ChangeMe123!}
     depends_on:
-      db:
-        condition: service_healthy
+      migrate-init:
+        condition: service_completed_successfully
     restart: "no"
 
+  # One-shot (PR #13): seed missing policy documents without touching
+  # existing ones (--missing-only) and without embedding churn (--skip-chunks;
+  # run scripts/seed_knowledge_base.py manually for fresh citable chunks).
   kb-init:
     build:
       context: .
@@ -42,8 +64,8 @@ services:
     environment:
       DATABASE_URL: postgresql://hrdesk:local-development-only@db:5432/hrdesk
     depends_on:
-      db:
-        condition: service_healthy
+      migrate-init:
+        condition: service_completed_successfully
     restart: "no"
 
   backend:
@@ -52,11 +74,11 @@ services:
     environment:
       DATABASE_URL: postgresql://hrdesk:local-development-only@db:5432/hrdesk
       ATTACHMENT_SIGNING_KEY: local-development-only-change-before-production
+      AUTH_SIGNING_KEY: local-development-only-change-before-production
+      MAILPIT_HOST: mailpit
       CORS_ORIGINS: http://localhost:5173,http://127.0.0.1:5173
       TRACE_ENABLED: "false"
       RAG_GEMINI_API_KEY: ${RAG_GEMINI_API_KEY:-}
-      SMTP_HOST: mailpit
-      SMTP_PORT: 1025
     depends_on:
       db:
         condition: service_healthy

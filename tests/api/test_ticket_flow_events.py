@@ -98,9 +98,11 @@ def test_ticket_create_flow_emits_layer_events_in_order(api, caplog):
     assert deliver_completed.http["delivered"] >= 1  # agents were notified
 
 
-def test_ticket_create_rejected_flow_logs_controller_failed(api, caplog):
-    """Validation failure: started → failed (422); service/repository layers
-    are never reached."""
+def test_ticket_create_identity_mismatch_flow(api, caplog):
+    """A body employeeId that disagrees with the bearer token is rejected
+    INSIDE the instrumented span: started → failed (403); the service and
+    repository layers are never reached — the rejection stays auditable and
+    carries the correlation id like every other failure."""
     with caplog.at_level(logging.INFO, logger="hrdesk.flow"):
         res = api.client.post(
             "/api/tickets",
@@ -114,13 +116,13 @@ def test_ticket_create_rejected_flow_logs_controller_failed(api, caplog):
             },
         )
 
-    assert res.status_code == 422
+    assert res.status_code == 403
     records = _flow_records(caplog, "flow-e2e-fail-0001")
     assert _event_names(records) == [
         "tickets.create.started",
         "tickets.create.failed",
     ]
-    assert records[1].http["status"] == 422
+    assert records[1].http["status"] == 403
     assert records[1].http["error"] == "HTTPException"
     assert records[1].http["request_id"] == "flow-e2e-fail-0001"
 

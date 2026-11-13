@@ -21,7 +21,7 @@ app/
 Controllers parse requests and call services. Services own business rules and
 domain errors. Repositories execute parameterized SQL through psycopg 3; the
 PostgreSQL schema enforces relationships, checks, generated ticket references,
-and update timestamps. Login credentials use salted scrypt hashes stored in
+and update timestamps. Login credentials use bcrypt hashes stored in
 `users.password_hash`. Attachment bytes are kept in the `attachments` table
 and served only through short-lived HMAC-signed URLs.
 
@@ -32,57 +32,96 @@ Use Python 3.14 (the project uses lazy class-body annotations).
 ### Local stack with Docker
 
 From this directory, run `make up` to build and start the API and a local
-PostgreSQL database. The database is initialized from `schema.sql` on first
-startup. The API is available at <http://localhost:8000/docs>. Stop only the
-backend and database with `make down`; PostgreSQL data persists in a Docker
-volume across shutdowns. Start the frontend separately from
-`../hr-ticketing-frontend` with its own `make up`. This stack also starts
-Mailpit at <http://localhost:8025> for local email inspection; the backend
-sends password-reset codes to it automatically.
-After upgrading an existing database volume, apply schema changes with
-`docker compose exec -T db psql -U hrdesk -d hrdesk -v ON_ERROR_STOP=1 < schema.sql`.
-On startup, the local stack also loads any missing knowledge-base articles
-from the bundled PDFs. Existing articles are left unchanged.
-
-On first startup, the local stack sets passwords for demo accounts that do not
-already have one. The default local password is `ChangeMe123!`; override it
-before `make up` by setting `HR_DESK_TEMP_PASSWORD` in this directory's `.env`.
-Existing passwords are never replaced. This shared default is for local
-development only.
+PostgreSQL database; then run `make migrate` to bring the schema to the
+latest Alembic revision (below). The API is available at
+<http://localhost:8000/docs>. Stop only the backend and database with
+`make down`; PostgreSQL data persists in a Docker volume across shutdowns.
+Start the frontend separately from `../hr-ticketing-frontend` with its own
+`make up`. This stack also starts Mailpit at <http://localhost:8025> for
+local email inspection.
 
 The credentials and signing key used by this local stack are development-only.
 For Gemini assistant access, set `RAG_GEMINI_API_KEY` in this directory's
 `.env` file before starting the backend.
+
+### Schema migrations (Alembic)
+
+The database schema is versioned with Alembic — `alembic.ini` plus
+`migrations/`. Migrations run against the same `DATABASE_URL` the backend
+itself uses: inside the backend container when driven by Make, host-side
+when Alembic is run directly (the URL comes from the environment, from
+backend/.env, or `alembic -x url=...`).
+
+| Task | Command (from this directory) |
+| --- | --- |
+| Apply all pending revisions (or after a pull) | `make migrate` |
+| Declare a pre-Alembic database as revision 0001, then apply the rest | `make migrate-stamp` then `make migrate` |
+| Start a new empty revision | `make migrate-revision m="add hr_notes to tickets"` |
+| Show applied / current revision | `docker compose exec backend alembic current` |
+| Emit SQL for review without touching the DB | `alembic upgrade head --sql` (offline output) |
+
+Notes:
+
+- **No autogenerate.** Repositories are raw psycopg SQL; there are no ORM
+  models, so revisions are written by hand: minimal, reversible DDL
+  (upgrade AND downgrade), then `make migrate`.
+- **`op.execute()` is the tool**: PostgreSQL DDL is richer than SQLAlchemy's
+  expression language — write raw SQL in revisions (one statement per
+  `op.execute`, tables before their triggers/indexes).
+- **A baseline revision captures what EXISTS, not what's shiny: revision
+  0001 is the historical pre-Alembic structure exactly** (no `auth_version`,
+  no reset table); everything THIS release adds is a separate, later
+  revision (0002). Stamping an old database at 0001 and then `upgrade head`
+  therefore brings it fully current. `make migrate-stamp` stamps **0001
+  explicitly, never `head`** — stamping head would silently hide every
+  future revision from an under-migrated database.
+- The historical repair story (`.hr@` renames, duplicate-account collapse,
+  role-check widening) is intentionally absent from 0001 — old databases
+  were already healed; new ones never need it.
+- **Personas/seed data live outside migrations**: `scripts/provision_users.py`,
+  `scripts/seed_knowledge_base.py` and `scripts/seed_demo_data.py` remain the
+  data owners.
+- `schema.sql` mirrors the CURRENT head state (0001 + later revisions) and
+  stays in the repository as an emergency hand-applied bootstrap; the compose
+  db service no longer auto-applies it — stack startup instead runs
+  `migrate-init` (one-shot `alembic upgrade head`) before the demo/kb
+  one-shots and the API. `make migrate` runs the same command on demand.
 
 ### External PostgreSQL or host-based setup
 
 1. Create a PostgreSQL database and a dedicated application role. Grant it
    access to the database and schema; the backend does not require Supabase,
    PostgREST, GoTrue, or Supabase Storage.
-2. From the repository root, apply [`schema.sql`](./schema.sql):
+2. From the repository root, create the schema with Alembic:
 
    ```bash
-   psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f schema.sql
+   alembic upgrade head    # URL from DATABASE_URL/.env; -x url=… to override
    ```
 
-   This idempotently creates the application tables (including PostgreSQL
-   storage for attachments and knowledge-base PDFs), indexes, triggers, and
-   seven demo users.
+   This creates the application tables (including PostgreSQL storage for
+   attachments and knowledge-base PDFs), indexes, and triggers.
+   [`schema.sql`](./schema.sql) is retained in the repository as an
+   emergency hand-applied bootstrap:
+   `psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f schema.sql` produces the same
+   head-state structure today; afterwards run
+   `alembic stamp 0001 && alembic upgrade head` so Alembic records the
+   position (the 0002 guards are no-ops there, but future revisions apply
+   normally).
 3. Create `.env` from `.env.example`. Configure a PostgreSQL connection URL and
    a persistent attachment signing key:
 
    ```dotenv
    DATABASE_URL=postgresql://hrdesk:password@localhost:5432/hrdesk
    ATTACHMENT_SIGNING_KEY=<output-of-openssl-rand-hex-32>
+   AUTH_SIGNING_KEY=<output-of-openssl-rand-hex-32>
    ```
 
-   Generate the key with `openssl rand -hex 32`. Keep it private and identical
-   across all workers and restarts; existing signed URLs become invalid if it
-   changes. For hosted PostgreSQL, use the provider's SSL-enabled connection
-   URL. Pool size can be tuned with `DB_POOL_MIN_SIZE` and `DB_POOL_MAX_SIZE`.
-   Configure `SMTP_HOST`, `SMTP_PORT`, and `SMTP_FROM` for password-reset
-   delivery. Set `SMTP_STARTTLS=true`, `SMTP_USERNAME`, and `SMTP_PASSWORD` as
-   required by the mail provider.
+   Generate each key with `openssl rand -hex 32`. Keep them private and
+   identical across all workers and restarts; changing the auth key invalidates
+   login tokens. Mailpit's default SMTP endpoint is `127.0.0.1:1025`; configure
+   `MAILPIT_HOST` and `MAILPIT_PORT` to match your local Mailpit service.
+   For hosted PostgreSQL, use the provider's SSL-enabled connection URL. Pool
+   size can be tuned with `DB_POOL_MIN_SIZE` and `DB_POOL_MAX_SIZE`.
 4. Install and run:
 
    ```bash
@@ -96,8 +135,9 @@ For Gemini assistant access, set `RAG_GEMINI_API_KEY` in this directory's
 
    The provisioning command sets an initial password for every account. Use
    `--password` or `HR_DESK_TEMP_PASSWORD` to provide it non-interactively.
-   Passwords must contain at least 12 characters. Do not commit `.env` or
-   supply passwords as command-line arguments in shared shell history.
+   Passwords must contain at least 12 characters and no more than 72 UTF-8
+   bytes (bcrypt's input limit). Do not commit `.env` or supply passwords as
+   command-line arguments in shared shell history.
    To seed the policy library and render its PDFs into PostgreSQL, install
    `scripts/requirements-seed.txt` and run
    `python scripts/seed_knowledge_base.py`.
@@ -110,12 +150,11 @@ For Gemini assistant access, set `RAG_GEMINI_API_KEY` in this directory's
 
 Policy PDFs live **inside the `kb_documents` table** (metadata + `data`
 bytea); the `/api/kb/{slug}/file` endpoint streams them to the browser after
-the same viewer/role gate as the metadata endpoints. The local Docker stack loads missing articles at startup. To load or refresh
-the 30 pre-rendered documents manually (data lives in
-`scripts/knowledge_base_pdfs/`):
+the same viewer/role gate as the metadata endpoints. To load the 30
+pre-rendered documents (data lives in `scripts/knowledge_base_pdfs/`):
 
 ```bash
-# schema.sql (run once, above) creates the kb_documents table
+# revision 0001 (applied above) creates the kb_documents table
 python scripts/seed_knowledge_base.py --dry-run   # plan only
 python scripts/seed_knowledge_base.py             # upsert all 30 by slug
 python scripts/seed_knowledge_base.py --only leave
@@ -182,7 +221,9 @@ curl -X POST http://localhost:8000/api/assistant/ask \
 Supabase's relational tables are PostgreSQL tables and can be exported with
 `pg_dump`. For a new, empty target database:
 
-1. Apply this repository's `schema.sql` to the target.
+1. Create the schema on the target with Alembic (`alembic upgrade head`,
+   or `schema.sql` + a follow-up `alembic stamp 0001` for a hand-applied
+   bootstrap).
 2. Truncate the seeded rows in the target before importing:
 
    ```sql
@@ -230,7 +271,10 @@ response shapes are stable, with two deliberate updates: ticket reads are scoped
 | Frontend operation | Endpoint |
 | --- | --- |
 | Login | `POST /api/auth/login` |
-| Create/list tickets | `POST /api/tickets`, `GET /api/tickets?viewerId=...` |
+| Request a password-reset OTP | `POST /api/auth/forgot-password` |
+| Reset password with OTP | `POST /api/auth/reset-password` |
+| Change password while signed in | `POST /api/auth/password` |
+| Create/list tickets | `POST /api/tickets`, `GET /api/tickets?...` (bearer-gated; paginated envelope) |
 | Get ticket by reference or UUID | `GET /api/tickets/{TKT-n or uuid}` |
 | Add reply | `POST /api/tickets/{id}/replies` |
 | Update status / assignee / priority / category | `PATCH /api/tickets/{id}/status`, `/assignee`, `/priority`, `/category` |
@@ -266,6 +310,20 @@ returns `{name, size, url, expiresInSeconds}`; the URL points back to the API
 and is valid for 60 seconds to 24 hours (default one hour). Draft attachment
 URLs are similarly scoped to the employee-owned draft.
 
+Login returns an expiring bearer access token. Send it as
+`Authorization: Bearer <accessToken>` to API endpoints; account and
+knowledge-base administration checks the authenticated database account's
+admin role rather than trusting a caller-supplied actor ID. There is no public
+signup route: admins create accounts through `POST /api/admin/accounts`.
+All new passwords and reset OTPs use bcrypt; existing scrypt password hashes
+are upgraded after a successful login when they fit bcrypt's 72-byte limit.
+All `/api` endpoints require a valid bearer token except login and the public
+forgot/reset-password endpoints. Forgot-password requests return the same
+response for existing and unknown emails. For an existing account, the API
+emails a six-digit OTP through
+Mailpit, valid for 10 minutes by default and limited to five guesses. Changing
+or resetting a password invalidates previously issued access tokens.
+
 ## Notifications
 
 Notifications are generic and never include ticket subjects, descriptions, or
@@ -296,5 +354,6 @@ cooldown use `CIRCUIT_BREAKER_FAILURE_THRESHOLD` and
 ruff format .
 ruff check .
 pytest
-pytest -m integration       # requires DATABASE_URL and schema.sql
+pytest -m integration       # requires DATABASE_URL and a migrated schema
+                            # (alembic upgrade head, or schema.sql + stamp)
 ```

@@ -33,59 +33,10 @@ class UserRepository:
     def get_credentials_by_email(self, email: str) -> Optional[dict]:
         return first_of(
             self._database,
-            "SELECT id, name, email, role, password_hash FROM users "
+            "SELECT id, name, email, role, password_hash, auth_version FROM users "
             "WHERE lower(email) = lower(%s) LIMIT 1",
             (email,),
             table="users",
-        )
-
-    def get_password_reset_account_by_email(self, email: str) -> Optional[dict]:
-        return first_of(
-            self._database,
-            "SELECT id, name, email FROM users WHERE lower(email) = lower(%s) LIMIT 1",
-            (email,),
-            table="users",
-        )
-
-    def get_password_reset_code(self, user_id: str) -> Optional[dict]:
-        return first_of(
-            self._database,
-            "SELECT code_hash, expires_at FROM password_reset_codes WHERE user_id = %s",
-            (as_uuid(user_id),),
-            table="password_reset_codes",
-        )
-
-    def store_password_reset_code(self, user_id: str, code_hash: str, expires_at) -> None:
-        run(
-            self._database,
-            "INSERT INTO password_reset_codes (user_id, code_hash, expires_at) "
-            "VALUES (%s, %s, %s) ON CONFLICT (user_id) DO UPDATE SET "
-            "code_hash = EXCLUDED.code_hash, expires_at = EXCLUDED.expires_at, "
-            "created_at = CURRENT_TIMESTAMP",
-            (as_uuid(user_id), code_hash, expires_at),
-            fetch="none",
-            table="password_reset_codes",
-        )
-
-    def consume_password_reset_code(self, user_id: str, code_hash: str, now) -> bool:
-        return bool(
-            run(
-                self._database,
-                "DELETE FROM password_reset_codes "
-                "WHERE user_id = %s AND code_hash = %s AND expires_at > %s",
-                (as_uuid(user_id), code_hash, now),
-                fetch="none",
-                table="password_reset_codes",
-            )
-        )
-
-    def delete_password_reset_code(self, user_id: str, code_hash: str) -> None:
-        run(
-            self._database,
-            "DELETE FROM password_reset_codes WHERE user_id = %s AND code_hash = %s",
-            (as_uuid(user_id), code_hash),
-            fetch="none",
-            table="password_reset_codes",
         )
 
     def accounts(self) -> list[dict]:
@@ -98,13 +49,17 @@ class UserRepository:
     def set_password_hash(self, user_id: str, password_hash: str) -> None:
         run(
             self._database,
-            "UPDATE users SET password_hash = %s WHERE id = %s",
+            "UPDATE users SET password_hash = %s, auth_version = auth_version + 1 WHERE id = %s",
             (password_hash, as_uuid(user_id)),
             fetch="none",
             table="users",
         )
 
     def set_password_hash_if_missing(self, user_id: str, password_hash: str) -> bool:
+        """Give a password to a provisioned account that has none yet —
+        used by the compose demo-init one-shot (never overwrites an existing
+        password; does not bump auth_version because nothing changes for
+        active sessions)."""
         return bool(
             run(
                 self._database,
@@ -113,6 +68,16 @@ class UserRepository:
                 fetch="none",
                 table="users",
             )
+        )
+
+    def upgrade_password_hash(self, user_id: str, old_hash: str, new_hash: str) -> int:
+        return run(
+            self._database,
+            "UPDATE users SET password_hash = %s, auth_version = auth_version + 1 "
+            "WHERE id = %s AND password_hash = %s",
+            (new_hash, as_uuid(user_id), old_hash),
+            fetch="none",
+            table="users",
         )
 
     def list_by_role(self, role: str) -> list[dict]:

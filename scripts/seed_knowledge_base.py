@@ -4,8 +4,8 @@ policy PDFs from scripts/knowledge_base_pdfs/, upsert one kb_documents row
 each (metadata + `data` bytea + file size) into the DATABASE_URL database
 from backend/.env.
 
-Usage — run from the repo root (run schema.sql once first; it creates the
-kb_documents table):
+Usage — run from the repo root (the migrated schema creates the kb_documents
+table — `make migrate`; or the compose kb-init one-shot):
 
     python scripts/seed_knowledge_base.py --dry-run     # plan without touching PostgreSQL
     python scripts/seed_knowledge_base.py               # upsert all documents

@@ -1,4 +1,14 @@
-"""Set initial local-demo passwords without overwriting existing passwords."""
+"""Set initial local-demo passwords without overwriting existing passwords.
+
+Runs as the compose ``demo-init`` one-shot on every ``make up``: accounts
+created through the console or provisioning keep their passwords; persona
+accounts provisioned bare get ``HR_DESK_TEMP_PASSWORD`` so a local stack can
+be exercised without an interactive provisioning prompt. Missing accounts
+are skipped quietly — a fresh Alembic database starts with an empty users
+table and fills up through provisioning / the admin console.
+
+Env: ``HR_DESK_TEMP_PASSWORD`` (min 12 characters, default ``ChangeMe123!``).
+"""
 
 import os
 import sys
@@ -34,9 +44,9 @@ def main() -> int:
     for email in DEMO_EMAILS:
         user = users.get_by_email_case_insensitive(email)
         if user is None:
-            raise RuntimeError(f"Expected local demo account is missing: {email}")
+            continue  # fresh database / renamed account — nothing to do here
         if not user.get("password_hash"):
-            initialized += users.set_password_hash_if_missing(user["id"], password_hash)
+            initialized += int(users.set_password_hash_if_missing(user["id"], password_hash))
 
     print(f"Initialized passwords for {initialized} local demo account(s) without passwords.")
     return 0

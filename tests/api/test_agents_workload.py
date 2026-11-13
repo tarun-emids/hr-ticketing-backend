@@ -1,6 +1,9 @@
 import uuid as uuidlib
 
-from tests.conftest import U
+from tests.conftest import U, auth_headers
+
+ALICIA = auth_headers("alicia")
+RUTH = auth_headers("ruth")
 
 
 def _bulk_ticket(fake, *, employee_id, assignee_id, status):
@@ -21,7 +24,7 @@ def _bulk_ticket(fake, *, employee_id, assignee_id, status):
 
 
 def workload_by_id(api):
-    r = api.client.get("/api/agents/workload", params={"viewerId": U["alicia"]})
+    r = api.client.get("/api/agents/workload", params={"viewerId": U["alicia"]}, headers=ALICIA)
     assert r.status_code == 200
     return {row["id"]: row for row in r.json()}
 
@@ -29,7 +32,7 @@ def workload_by_id(api):
 def test_open_total_split_across_agents(api):
     """Seeded: TKT-102 In Progress -> alicia (active), TKT-103 Resolved ->
     ben (not active). A fresh unassigned Open ticket must land nowhere."""
-    res = api.client.post(
+    res = api.client.post(                       # priya default token mismatch → use tomas
         "/api/tickets",
         json={
             "employeeId": U["tomas"],
@@ -37,6 +40,7 @@ def test_open_total_split_across_agents(api):
             "subject": "Unassigned ticket for the workload split test",
             "description": "This Open ticket must stay unassigned in the workload split test.",
         },
+        headers=auth_headers("tomas"),
     )
     assert res.status_code == 201
 
@@ -52,7 +56,7 @@ def test_open_total_split_across_agents(api):
 
 def test_workload_orders_agents_by_account_creation(api):
     """Contract: roster order (account creation date), not workload order."""
-    r = api.client.get("/api/agents/workload", params={"viewerId": U["ruth"]})
+    r = api.client.get("/api/agents/workload", params={"viewerId": U["ruth"]}, headers=RUTH)
     assert [row["id"] for row in r.json()] == [U["alicia"], U["ben"], U["ruth"]]
 
 
