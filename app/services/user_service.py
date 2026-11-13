@@ -13,7 +13,11 @@ class UserService:
 
     def list_users(self) -> list[dict]:
         """Employees first, then agents (each group newest-account-last)."""
-        ordered = self._users.list_by_role("employee") + self._users.list_by_role("agent")
+        ordered = (
+            self._users.list_by_role("employee")
+            + self._users.list_by_role("agent")
+            + self._users.list_by_role("admin")
+        )
         return [user_out(u) for u in ordered]
 
     def list_agents(self) -> list[dict]:

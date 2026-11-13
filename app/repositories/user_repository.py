@@ -108,8 +108,7 @@ class UserRepository:
         return bool(
             run(
                 self._database,
-                "UPDATE users SET password_hash = %s "
-                "WHERE id = %s AND password_hash IS NULL",
+                "UPDATE users SET password_hash = %s WHERE id = %s AND password_hash IS NULL",
                 (password_hash, as_uuid(user_id)),
                 fetch="none",
                 table="users",
