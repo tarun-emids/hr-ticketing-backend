@@ -1,5 +1,5 @@
 from tests.conftest import U
-
+import uuid as uuidlib
 
 def test_health(api):
     r = api.client.get("/health")
@@ -37,3 +37,21 @@ def test_meta_lists(api):
     assert m["categories"] == ["Payroll", "Leave", "Benefits", "Onboarding", "Policy", "Other"]
     assert m["priorities"] == ["Low", "Medium", "High", "Urgent"]
     assert m["statuses"] == ["Open", "In Progress", "Waiting on Employee", "Resolved", "Closed"]
+
+def test_list_users_includes_admin_after_agents(api):
+    """Regression (2026-11-13 prod bug): the directory must list every role.
+
+    Frontend authSlice drops a stored session whose id is missing from
+    GET /api/users — an admin omitted from the directory is signed out on
+    every page reload. Admins ride the directory LAST, after employees
+    and agents."""
+    admin_id = str(uuidlib.uuid4())
+    api.fake.execute(
+        "INSERT INTO users (id, name, email, role) VALUES (%s, %s, %s, %s)",
+        (admin_id, "Ada Admin", "ada@acme.com", "admin"),
+    )
+    users = api.client.get("/api/users").json()
+    ids = [u["id"] for u in users]
+    assert ids[-1] == admin_id  # appended after employees + agents
+    roles = [u["role"] for u in users]
+    assert roles == ["employee"] * 4 + ["agent"] * 3 + ["admin"]
