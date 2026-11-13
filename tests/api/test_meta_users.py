@@ -1,5 +1,7 @@
-from tests.conftest import U
 import uuid as uuidlib
+
+from tests.conftest import U
+
 
 def test_health(api):
     r = api.client.get("/health")
@@ -37,6 +39,7 @@ def test_meta_lists(api):
     assert m["categories"] == ["Payroll", "Leave", "Benefits", "Onboarding", "Policy", "Other"]
     assert m["priorities"] == ["Low", "Medium", "High", "Urgent"]
     assert m["statuses"] == ["Open", "In Progress", "Waiting on Employee", "Resolved", "Closed"]
+
 
 def test_list_users_includes_admin_after_agents(api):
     """Regression (2026-11-13 prod bug): the directory must list every role.
