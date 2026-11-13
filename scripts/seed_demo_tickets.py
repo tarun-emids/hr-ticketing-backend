@@ -21,9 +21,9 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
-from psycopg.rows import dict_row
 
 import psycopg
+from psycopg.rows import dict_row
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BACKEND_DIR))
@@ -34,34 +34,64 @@ ACTIVE = ("Open", "In Progress", "Waiting on Employee")
 # (category, subject, description, priority) — deterministic template pool.
 # Long enough for schema CHECKs (subject >= 5 chars, description >= 20).
 _TEMPLATES = [
-    ("Payroll", "Question about overtime rate on my payslip",
-     "The overtime rate on this month's payslip looks lower than my band."),
-    ("Leave", "Carryover rules for unused PTO days next quarter",
-     "I have five pending PTO days. Do they carry over or expire?"),
-    ("Benefits", "Dental plan coverage for partial orthodontics",
-     "Does the new dental plan cover partial orthodontic treatment?"),
-    ("Onboarding", "Missing hardware in my onboarding checklist",
-     "My onboarding checklist did not include a second monitor request."),
-    ("Policy", "Clarification on the hybrid work policy clause",
-     "The hybrid work policy clause on anchor days is unclear to me."),
-    ("Payroll", "Missing transport allowance in April payslip",
-     "April's payslip seems to be missing the transport allowance line."),
-    ("Leave", "How many leaves carry an advance notice period",
-     "Which leave types need advance notice and how much in advance?"),
-    ("Benefits", "Enrollment window for the new health plan",
-     "When does the enrollment window for the upgraded health plan open?"),
-    ("Policy", "Remote work equipment expense reimbursement",
-     "Can I expense a second monitor under the hybrid work policy?"),
-    ("Other", "Gratuity calculation for a completed 5-year term",
-     "How is gratuity calculated for employees completing five years?"),
+    (
+        "Payroll",
+        "Question about overtime rate on my payslip",
+        "The overtime rate on this month's payslip looks lower than my band.",
+    ),
+    (
+        "Leave",
+        "Carryover rules for unused PTO days next quarter",
+        "I have five pending PTO days. Do they carry over or expire?",
+    ),
+    (
+        "Benefits",
+        "Dental plan coverage for partial orthodontics",
+        "Does the new dental plan cover partial orthodontic treatment?",
+    ),
+    (
+        "Onboarding",
+        "Missing hardware in my onboarding checklist",
+        "My onboarding checklist did not include a second monitor request.",
+    ),
+    (
+        "Policy",
+        "Clarification on the hybrid work policy clause",
+        "The hybrid work policy clause on anchor days is unclear to me.",
+    ),
+    (
+        "Payroll",
+        "Missing transport allowance in April payslip",
+        "April's payslip seems to be missing the transport allowance line.",
+    ),
+    (
+        "Leave",
+        "How many leaves carry an advance notice period",
+        "Which leave types need advance notice and how much in advance?",
+    ),
+    (
+        "Benefits",
+        "Enrollment window for the new health plan",
+        "When does the enrollment window for the upgraded health plan open?",
+    ),
+    (
+        "Policy",
+        "Remote work equipment expense reimbursement",
+        "Can I expense a second monitor under the hybrid work policy?",
+    ),
+    (
+        "Other",
+        "Gratuity calculation for a completed 5-year term",
+        "How is gratuity calculated for employees completing five years?",
+    ),
 ]
 _PRIORITIES = ["Low", "Medium", "High", "Urgent"]
 _STATUS_CYCLE = [
-    ("Open", None, 0.0),                      # unassigned, no stamps
-    ("In Progress", 2.0, 0.0),                # assigned, agent picked up
-    ("Waiting on Employee", 1.0, 0.0),        # assigned, employee owes a turn
-    ("Resolved", 0.0, 25.0),                  # resolved in ~a day
-    ("Closed", 1.0, 25.0),                    # closed by the agent
+    ("Open", None, 0.0),  # unassigned, no stamps
+    ("In Progress", 2.0, 0.0),  # assigned, agent picked up
+    ("Waiting on Employee", 1.0, 0.0),  # assigned, employee owes a turn
+    ("Resolved", 0.0, 25.0),  # resolved in ~a day
+    ("Closed", 1.0, 25.0),  # closed by the agent
 ]
 
 
@@ -186,7 +216,9 @@ def main() -> int:
                 )
             inserted += 1
             if inserted <= 3 or inserted % 10 == 0:
-                print(f"  inserted {ticket['ref']}: {MARKER}{subject} ({status}, {employee['name']}, {priority})")
+                print(
+                    f"  inserted {ticket['ref']}: {MARKER}{subject} ({status}, {employee['name']}, {priority})"
+                )
 
         connection.commit()
         by_employee = {}
